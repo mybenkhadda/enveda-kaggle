@@ -1,0 +1,13 @@
+# CASMI runtime on Kaggle (INTERNET OFF). Nothing is downloaded at inference time: these come from the Kaggle Python
+# image; the ONLY optional install is an offline wheel (see KAGGLE_RUN_GUIDE.md, dataset "casmi-wheels"):
+#   pip install --no-index --no-deps /kaggle/input/<casmi-wheels>/lightgbm-4.7.0-*.whl
+# If the image's lightgbm differs and no wheel is attached, the run continues ONLY IF the bundle self-test
+# (fold scores at 1e-9) passes -- the self-test, not the version string, is the parity arbiter.
+lightgbm==4.7.0
+numpy>=1.26
+pandas>=2.2
+pyarrow>=15
+psutil>=5.9
+# optional (present in the Kaggle image; absent -> numpy backend / export-time SMILES validation)
+rdkit>=2024.3
+numba>=0.58

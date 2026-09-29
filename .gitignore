@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+
+# runtime data NEVER lives in this repo (bundle: Google Drive / Kaggle Dataset; data: the competition)
+bundle/
+bundle_archive/
+data/
+outputs/
+colab_runtime/
+casmi_runtime_data/
+kaggle_dryrun/
+results/
+
+# large / binary / model artifacts
+*.parquet
+*.npy
+*.npz
+*.feather
+*.pkl
+*.joblib
+*_fold*.txt
+*.whl
+
+*.log
+.env
+*.token
