@@ -207,7 +207,7 @@ def run_named_inference(
     bundle_dir, test_path, sample_path = _require_named_files(bundle_dir, test_path, sample_path)
     stage = "start"
     ctx = {
-        "bundle_integrity_mode": "FILENAMES_ONLY_NO_SHA",
+        "bundle_integrity_mode": "FILENAMES_ONLY",
         "bundle_dir": str(bundle_dir.resolve()),
         "test_path": str(test_path.resolve()),
         "sample_submission_path": str(sample_path.resolve()),
@@ -373,7 +373,7 @@ def run_named_inference(
             "bundle_dir": str(bundle_dir.resolve()),
             "test_file": test_path.name,
             "sample_submission_file": sample_path.name,
-            "bundle_integrity_mode": "FILENAMES_ONLY_NO_SHA",
+            "bundle_integrity_mode": "FILENAMES_ONLY",
             "bundle_hash_verification": False,
             "fixture_hash_verification": False,
             "self_test_status": "PASS",
