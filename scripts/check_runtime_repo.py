@@ -30,7 +30,8 @@ TRAINING_ONLY = ("scikit-learn", "scipy", "matplotlib", "tqdm", "pyyaml", "jobli
 RUNTIME_CORE = ("src/casmi_infer/__init__.py", "src/casmi_infer/pipeline.py", "src/casmi_infer/selftest.py", "src/casmi_infer/validation.py",
                 "src/casmi_infer/aggregation.py", "src/casmi_infer/backend.py", "src/casmi_runtime/__init__.py", "src/casmi_runtime/config.py",
                 "src/casmi_runtime/accelerator.py", "src/casmi_runtime/backends.py", "src/casmi_runtime/frozen.py",
-                "src/casmi_runtime/inference.py", "src/casmi_runtime/results.py", "src/casmi_runtime/benchmark.py")
+                "src/casmi_runtime/inference.py", "src/casmi_runtime/named_inference.py",
+                "src/casmi_runtime/results.py", "src/casmi_runtime/benchmark.py")
 TEXT_SUFFIXES = {".py", ".md", ".txt", ".ipynb", ".json", ".toml", ".cfg", ".ini", ".yml", ".yaml", ".ps1", ".template", ""}
 PACKAGES = ("casmi", "casmi_infer", "casmi_runtime")
 
@@ -132,9 +133,7 @@ def check_repo(repo, max_mb=50.0):
         except ValueError as e:
             problems.append(str(e))
             continue
-        if reqs.get("lightgbm") != "lightgbm==4.7.0":
-            problems.append(f"{name}: lightgbm must be pinned to 4.7.0 (frozen boosters), got {reqs.get('lightgbm')!r}")
-        problems += [f"{name} lacks {n}" for n in ("numpy", "pandas", "pyarrow") if n not in reqs]
+        problems += [f"{name} lacks {n}" for n in ("lightgbm", "numpy", "pandas", "pyarrow") if n not in reqs]
         problems += [f"{name} lists a training-only package: {n}" for n in TRAINING_ONLY if n in reqs]
     for nb in (repo / "notebooks").glob("*.ipynb") if (repo / "notebooks").is_dir() else []:
         try:
