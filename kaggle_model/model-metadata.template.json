@@ -1,0 +1,8 @@
+{
+  "ownerSlug": "YOUR_KAGGLE_USERNAME",
+  "title": "Enveda CASMI 2026 v2-A7 E2E",
+  "slug": "enveda-casmi-v2-a7",
+  "subtitle": "Frozen CASMI 2026 spectrum-to-SMILES ranking runtime",
+  "isPrivate": true,
+  "description": "Private frozen inference package for CASMI 2026. Includes the v2-A7 reference library, five frozen LightGBM ranking folds, A7 MOST_CONFIDENT_SPECTRUM aggregation/calibration, self-test fixtures, frozen scientific inference code, and the lightweight runtime orchestration needed for offline Kaggle inference."
+}
