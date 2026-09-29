@@ -83,6 +83,10 @@ foreach ($rel in $runtimeFiles) {
     } else {
         Join-Path $Payload ("runtime\" + $rel)
     }
+    $dstParent = Split-Path -Parent $dst
+    if (-not (Test-Path $dstParent)) {
+        New-Item -ItemType Directory -Force -Path $dstParent | Out-Null
+    }
     Copy-Item -LiteralPath $src -Destination $dst -Force
 }
 
