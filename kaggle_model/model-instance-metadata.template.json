@@ -1,0 +1,13 @@
+{
+  "ownerSlug": "YOUR_KAGGLE_USERNAME",
+  "modelSlug": "enveda-casmi-v2-a7",
+  "instanceSlug": "full-e2e",
+  "framework": "sklearn",
+  "overview": "Complete offline CASMI 2026 v2-A7 inference payload.",
+  "usage": "Attach this model to the Kaggle notebook. The payload root is available at `${PATH}` and contains `bundle/` plus `runtime/src/casmi_runtime/`. The competition `test.parquet` and `sample_submission.csv` remain separate competition inputs.",
+  "fineTunable": false,
+  "trainingData": [],
+  "modelInstanceType": "Unspecified",
+  "baseModelInstance": "",
+  "externalBaseModelUrl": ""
+}
