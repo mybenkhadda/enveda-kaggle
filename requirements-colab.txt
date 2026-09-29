@@ -1,15 +1,8 @@
-# CASMI runtime on Colab -- only what frozen inference, the bundle check, the benchmark and the tests import
-# (numpy / pandas / pyarrow / lightgbm / psutil; numba + rdkit optional; nbclient not needed: no notebook is executed
-# from another notebook). Colab preinstalls most of these; pip skips every requirement already satisfied.
-#
-# Parity pin: the frozen V1 fold boosters were exported and the self-test fixture was scored with lightgbm 4.7.0.
-lightgbm==4.7.0
-numpy>=1.26
-pandas>=2.2
-pyarrow>=15
-psutil>=5.9
-# optional: RDKit parses every emitted SMILES (else the bundle's export-time validation is used); numba is the
-# fast CPU backend (not pinned: Colab's build is used and must pass the bundle self-test, else numpy is used)
-rdkit>=2024.3
-numba>=0.58
-pytest>=7
+﻿numpy
+pandas
+pyarrow
+lightgbm
+numba
+psutil
+rdkit
+pytest
