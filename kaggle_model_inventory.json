@@ -1,0 +1,92 @@
+{
+  "model": {
+    "slug": "enveda-casmi-v2-a7",
+    "framework": "sklearn",
+    "variation": "full-e2e",
+    "privacy": "private",
+    "payload_root": "kaggle_model_build/payload"
+  },
+  "runtime_source": {
+    "required": [
+      "runtime/src/casmi_runtime/__init__.py",
+      "runtime/src/casmi_runtime/accelerator.py",
+      "runtime/src/casmi_runtime/backends.py",
+      "runtime/src/casmi_runtime/benchmark.py",
+      "runtime/src/casmi_runtime/config.py",
+      "runtime/src/casmi_runtime/frozen.py",
+      "runtime/src/casmi_runtime/inference.py",
+      "runtime/src/casmi_runtime/named_inference.py",
+      "runtime/src/casmi_runtime/results.py",
+      "runtime/notebooks/02_kaggle_inference.ipynb",
+      "runtime/requirements-kaggle.txt",
+      "runtime/KAGGLE_RUN_GUIDE.md"
+    ]
+  },
+  "frozen_bundle": {
+    "required": [
+      "bundle/config.json",
+      "bundle/manifest.json",
+      "bundle/README.md",
+      "bundle/adducts.json",
+      "bundle/ppm_windows.json",
+      "bundle/smiles_validation.json",
+      "bundle/_reference_library_inputs.json",
+      "bundle/_ref_peaks_int.f8",
+      "bundle/_ref_peaks_mz.f8",
+      "bundle/ref_peaks_int.npy",
+      "bundle/ref_peaks_mz.npy",
+      "bundle/ref_peaks_offsets.npy",
+      "bundle/ref_index_ids.npy",
+      "bundle/ref_index_offsets.npy",
+      "bundle/ref_meta.parquet",
+      "bundle/connectivities.parquet",
+      "bundle/structures.parquet",
+      "bundle/structures_mass.npy",
+      "bundle/models/feature_names.json",
+      "bundle/models/model_info.json",
+      "bundle/models/v1_fold0.txt",
+      "bundle/models/v1_fold1.txt",
+      "bundle/models/v1_fold2.txt",
+      "bundle/models/v1_fold3.txt",
+      "bundle/models/v1_fold4.txt",
+      "bundle/aggregation/aggregator_lock.json",
+      "bundle/aggregation/calibration.json",
+      "bundle/aggregation/selected_aggregator.json",
+      "bundle/selftest/fixture_manifest.json",
+      "bundle/selftest/queries.parquet",
+      "bundle/selftest/expected_features.parquet",
+      "bundle/selftest/expected_scores.parquet",
+      "bundle/selftest/expected_ranks.parquet",
+      "bundle/selftest/expected_probs.parquet",
+      "bundle/selftest/expected_molecules.parquet",
+      "bundle/selftest/expected_molecule_ranking.parquet",
+      "bundle/code/casmi_infer/__init__.py",
+      "bundle/code/casmi_infer/adducts.py",
+      "bundle/code/casmi_infer/aggregation.py",
+      "bundle/code/casmi_infer/backend.py",
+      "bundle/code/casmi_infer/compat.py",
+      "bundle/code/casmi_infer/features.py",
+      "bundle/code/casmi_infer/mass_search.py",
+      "bundle/code/casmi_infer/pipeline.py",
+      "bundle/code/casmi_infer/ranker.py",
+      "bundle/code/casmi_infer/reference_index.py",
+      "bundle/code/casmi_infer/selftest.py",
+      "bundle/code/casmi_infer/similarity.py",
+      "bundle/code/casmi_infer/spectrum.py",
+      "bundle/code/casmi_infer/submission.py",
+      "bundle/code/casmi_infer/validation.py",
+      "bundle/code/casmi/__init__.py"
+    ],
+    "required_directories": [
+      "bundle/code/casmi",
+      "bundle/code/casmi_infer"
+    ]
+  },
+  "competition": {
+    "separate_from_model": true,
+    "required": [
+      "test.parquet",
+      "sample_submission.csv"
+    ]
+  }
+}
