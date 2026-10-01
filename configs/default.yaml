@@ -1,0 +1,22 @@
+# Default PreprocessingConfig values (see src/casmi/config.py). Not auto-loaded by
+# PreprocessingConfig() itself -- load explicitly if you want YAML-driven config:
+#
+#   import yaml
+#   from casmi.config import PreprocessingConfig
+#   with open("configs/default.yaml") as f:
+#       config = PreprocessingConfig(**yaml.safe_load(f))
+
+seed: 42
+n_jobs: 8
+
+tautomer_max_tautomers: null   # null = RDKit default (closest to the competition's own canonicalizer)
+tautomer_max_transforms: null
+
+peak_batch_size: 50000
+fragment_above_precursor_da: 5.0
+extreme_fragment_mz: 5000.0
+float_dtype: float32
+
+mass_tolerance_grid_ppm: [1, 2, 3, 5, 10, 20, 50]
+
+n_mass_bins: 10

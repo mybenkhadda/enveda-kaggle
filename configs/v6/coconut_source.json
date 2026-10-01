@@ -1,0 +1,18 @@
+{
+  "_comment": "TEMPLATE. Obtain COCONUT MANUALLY (no code here downloads anything), put the file somewhere local, then set `path` and VERIFY every column name against your file header -- the schema is configured, never guessed. Keys starting with '_' are ignored.",
+  "_example_sdf": {"format": "sdf", "id_col": "coconut_id", "smiles_col": null, "name_col": "name", "formula_col": "molecular_formula"},
+  "_example_smi": {"format": "smi", "smi_has_header": false},
+  "source": "COCONUT",
+  "path": "",
+  "format": "csv",
+  "id_col": "identifier",
+  "smiles_col": "canonical_smiles",
+  "name_col": "name",
+  "formula_col": "molecular_formula",
+  "metadata_cols": [],
+  "delimiter": null,
+  "smi_has_header": false,
+  "chunksize": 50000,
+  "max_records": null,
+  "notes": "COCONUT export supplied by the user"
+}

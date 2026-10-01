@@ -20,11 +20,16 @@ ROOT = Path(__file__).resolve().parents[1]
 IN_DEV = (ROOT / "runtime" / "runtime_files.json").exists()
 TEMPLATE = ROOT / "runtime" if IN_DEV else ROOT
 NOTEBOOKS = TEMPLATE / "notebooks"
+INVENTORY = ROOT / "kaggle_model_inventory.json"          # repo root in both layouts
+
+
+def _strip_bundle(rel):
+    return rel[len("bundle/"):] if rel.startswith("bundle/") else rel
 SPEC = json.loads(((ROOT / "runtime" / "runtime_files.json") if IN_DEV else (ROOT / "runtime_files.json")).read_text(encoding="utf-8"))
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from casmi_runtime import backends as rb, config as rc, frozen as rf, inference as ri, results as rr  # noqa: E402
+from casmi_runtime import backends as rb, config as rc, frozen as rf, inference as ri, named_inference as rn, results as rr  # noqa: E402
 from casmi_runtime.accelerator import detect_accelerator  # noqa: E402
 
 
@@ -79,9 +84,21 @@ def test_requirements_parse_and_stay_minimal():
     ck = _checker()
     for name in ("requirements-colab.txt", "requirements-kaggle.txt"):
         reqs = ck.requirement_names(TEMPLATE / name)
-        assert reqs["lightgbm"] == "lightgbm==4.7.0" and {"numpy", "pandas", "pyarrow", "psutil"} <= set(reqs)
+        assert {"lightgbm", "numpy", "pandas", "pyarrow", "psutil"} <= set(reqs)
         assert not set(ck.TRAINING_ONLY) & set(reqs)
         assert all("==" not in r for n, r in reqs.items() if n != "lightgbm")
+    kaggle = ck.requirement_names(TEMPLATE / "requirements-kaggle.txt")
+    assert all("==" not in r for r in kaggle.values())                       # no exact pin: the self-test is the gate
+
+
+def test_checker_does_not_gate_on_a_lightgbm_version(tmp_path):
+    ck = _checker()
+    base = _minimal_repo(tmp_path / "base", ck)
+    for pin in ("lightgbm>=4.6", "lightgbm==4.6.0", "lightgbm"):
+        (base / "requirements-kaggle.txt").write_text(f"{pin}\nnumpy>=1.26\npandas>=2.2\npyarrow>=15\n", encoding="utf-8")
+        assert ck.check_repo(base) == [], pin
+    (base / "requirements-kaggle.txt").write_text("numpy>=1.26\npandas>=2.2\npyarrow>=15\n", encoding="utf-8")
+    assert any("lacks lightgbm" in p for p in ck.check_repo(base))           # but it must be declared
 
 
 def test_gitignore_template():
@@ -100,9 +117,13 @@ def _minimal_repo(base, ck):
         p.write_text("x = 1\n", encoding="utf-8")
     (base / ".gitignore").write_text("\n".join(ck.GITIGNORE_RULES) + "\n", encoding="utf-8")
     for name in ("requirements-colab.txt", "requirements-kaggle.txt"):
-        (base / name).write_text("lightgbm==4.7.0\nnumpy>=1.26\npandas>=2.2\npyarrow>=15\n", encoding="utf-8")
-    for nb in ("00_colab_setup.ipynb", "01_colab_inference.ipynb", "02_kaggle_inference.ipynb", "03_runtime_benchmark.ipynb"):
+        (base / name).write_text("lightgbm>=4.6\nnumpy>=1.26\npandas>=2.2\npyarrow>=15\n", encoding="utf-8")
+    for nb in ("00_colab_setup.ipynb", "01_colab_inference.ipynb", "03_runtime_benchmark.ipynb"):
         (base / "notebooks" / nb).write_text(json.dumps({"cells": []}), encoding="utf-8")
+    # the Kaggle entry is audited statically: ship the real notebook, entry module and inventory
+    shutil.copy2(NOTEBOOKS / "02_kaggle_inference.ipynb", base / "notebooks" / "02_kaggle_inference.ipynb")
+    shutil.copy2(ROOT / "src" / "casmi_runtime" / "named_inference.py", base / "src" / "casmi_runtime" / "named_inference.py")
+    shutil.copy2(INVENTORY, base / "kaggle_model_inventory.json")
     (base / "runtime_files.json").write_text(json.dumps(spec), encoding="utf-8")
     return base
 
@@ -131,6 +152,88 @@ def test_checker_accepts_clean_repo_and_rejects_every_artifact(tmp_path):
     shutil.copytree(base, miss)
     (miss / "notebooks" / "02_kaggle_inference.ipynb").unlink()
     assert any("02_kaggle_inference" in p for p in ck.check_repo(miss))
+
+
+def _nb_with(nb_path, old, new):
+    nb = json.loads(Path(nb_path).read_text(encoding="utf-8"))
+    for c in nb["cells"]:
+        if c["cell_type"] == "code":
+            c["source"] = [l.replace(old, new) for l in c["source"]]
+    Path(nb_path).write_text(json.dumps(nb), encoding="utf-8")
+
+
+def _edit(path, old, new):
+    text = Path(path).read_text(encoding="utf-8")
+    assert old in text, old
+    Path(path).write_text(text.replace(old, new), encoding="utf-8")
+
+
+def _edit_json(path, fn):
+    obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    fn(obj)
+    Path(path).write_text(json.dumps(obj), encoding="utf-8")
+
+
+def test_checker_kaggle_e2e_static_audit(tmp_path):
+    ck = _checker()
+    base = _minimal_repo(tmp_path / "base", ck)
+    closure, unresolved, problems = ck.kaggle_import_closure(base)
+    assert not unresolved and not problems
+    assert set(ck.KAGGLE_CLOSURE_MUST_INCLUDE) <= set(closure)
+    assert closure["casmi_runtime.named_inference"] == "src/casmi_runtime/named_inference.py"
+    assert "src/casmi_runtime/named_inference.py" in SPEC["runtime_core"] and "src/casmi_runtime/named_inference.py" in ck.RUNTIME_CORE
+    nb, entry, inv = "notebooks/02_kaggle_inference.ipynb", "src/casmi_runtime/named_inference.py", "kaggle_model_inventory.json"
+    variants = {
+        "old_anchor": lambda d: _nb_with(d / nb, "run_named_inference", "run_frozen_inference"),
+        "pip": lambda d: _nb_with(d / nb, "# 3. environment", "!pip install lightgbm==4.7.0\n# 3. environment"),
+        "network_nb": lambda d: _nb_with(d / nb, "# 3. environment", "!wget https://example.org/x\n# 3. environment"),
+        "hashing_nb": lambda d: _nb_with(d / nb, "# 3. environment", "import hashlib\n# 3. environment"),
+        "no_drift_policy": lambda d: _nb_with(d / nb, "allow_feature_only_drift=True", "allow_feature_only_drift=False"),
+        "verify_true": lambda d: _edit(d / entry, "Bundle(bundle_dir, verify=False)", "Bundle(bundle_dir, verify=True)"),
+        "verify_bundle": lambda d: _edit(d / entry, "def _write_json(", "def _x(f, b):\n    return f.validation.verify_bundle(b)\n\n\ndef _write_json("),
+        "hashing_fixture": lambda d: _edit(d / entry, "run_selftest(b, be, fixture=fixture)", "run_selftest(b, be)"),
+        "missing_closure_module": lambda d: (d / "src" / "casmi_runtime" / "backends.py").unlink(),
+        "network": lambda d: (d / "src" / "casmi_runtime" / "config.py").write_text("import urllib.request\n", encoding="utf-8"),
+        "inventory_fold": lambda d: _edit_json(d / inv, lambda j: j["frozen_bundle"]["required"].remove("bundle/models/v1_fold4.txt")),
+        "inventory_named": lambda d: _edit_json(d / inv, lambda j: j["runtime_source"]["required"].remove("runtime/src/casmi_runtime/named_inference.py")),
+        "inventory_train": lambda d: _edit_json(d / inv, lambda j: j["competition"]["required"].append("train.parquet")),
+        "inventory_runtime_infer": lambda d: _edit_json(d / inv, lambda j: j["runtime_source"]["required"].append("runtime/src/casmi_infer/pipeline.py")),
+        "inventory_public": lambda d: _edit_json(d / inv, lambda j: j["model"].update(private=False)),
+    }
+    for name, mutate in variants.items():
+        d = tmp_path / name
+        shutil.copytree(base, d)
+        mutate(d)
+        assert ck.check_repo(d), name
+
+
+def test_checker_bundle_and_competition_presence(tmp_path):
+    ck = _checker()
+    inv = json.loads(INVENTORY.read_text(encoding="utf-8"))
+    payload = tmp_path / "payload"
+    for rel in inv["payload_top_level"]["required"] + inv["runtime_source"]["required"] + inv["frozen_bundle"]["required"]:
+        (payload / rel).parent.mkdir(parents=True, exist_ok=True)
+        (payload / rel).write_text("x", encoding="utf-8")
+    (payload / "bundle" / "code" / "casmi" / "chemistry" / "__init__.py").write_text("", encoding="utf-8")   # empty inits are legitimate
+    (payload / "bundle" / "manifest.json").write_text(json.dumps({"bundle_format": "casmi-modeA-bundle-1", "files": {"config.json": "0"}}),
+                                                      encoding="utf-8")
+    (payload / "PACKAGE_INFO.json").write_text(json.dumps({**ck.PAYLOAD_IDENTITY, "bundle_integrity_mode": "FILENAMES_ONLY"}), encoding="utf-8")
+    b = payload / "bundle"
+    assert ck.check_bundle_dir(b, inv) == []
+    assert ck.check_payload(payload, inv) == []
+    for mutate, token in ((lambda: (payload / "runtime" / "src" / "casmi_infer").mkdir(parents=True), "casmi_infer"),
+                          (lambda: (payload / "test.parquet").write_bytes(b"0"), "competition file"),
+                          (lambda: (payload / "PACKAGE_INFO.json").write_text(json.dumps({"bundle_version": "v1"}), encoding="utf-8"), "PACKAGE_INFO")):
+        mutate()
+        assert any(token in p for p in ck.check_payload(payload, inv)), token
+    (b / "models" / "v1_fold3.txt").unlink()
+    assert any("v1_fold3" in p for p in ck.check_bundle_dir(b, inv))
+    c = tmp_path / "comp"
+    c.mkdir()
+    assert len(ck.check_competition_dir(c)) == 2
+    (c / "test.parquet").write_bytes(b"0")
+    (c / "sample_submission.csv").write_text("molecule_id,smiles\n")
+    assert ck.check_competition_dir(c) == []
 
 
 def test_no_credentials_in_source():
@@ -174,16 +277,23 @@ def test_colab_setup_notebook_does_no_inference():
 
 def test_kaggle_stage_order_offline_and_no_drive():
     c = _code("02_kaggle_inference.ipynb")
-    idx = _order(c, ["casmi_runtime/__init__.py", "detect_accelerator()", "run_frozen_inference(CFG)", "casmi_infer_source"])
-    assert idx == sorted(idx)
+    stages = ["ENTRY_PARTS", "resolve_kaggle_model_inputs(", "CONFIG['calibration_temperature'] == 1.1947045372735254", "detect_accelerator()",
+              "from casmi_runtime.named_inference import run_named_inference", "run_named_inference(", "allow_feature_only_drift=True",
+              "casmi_infer_source", "kaggle_anchor_report.json", "KAGGLE OFFLINE ANCHOR PASS"]
+    idx = _order(c, stages)
+    assert idx == sorted(idx), dict(zip(stages, idx))
     raw = (NOTEBOOKS / "02_kaggle_inference.ipynb").read_text(encoding="utf-8")
     src = "\n".join(c)
-    for tok in ("google.colab", "drive.mount", "/content/drive", "git", "http", "requests", "urllib", "KaggleApi", "competitions submit"):
+    for tok in ("google.colab", "drive.mount", "/content/drive", "git", "http", "requests", "urllib", "KaggleApi", "competitions submit",
+                "run_frozen_inference", "verify_bundle", "verify=True", "v63_bundle_check", "'pip'", "pip install", "'install'", ".whl",
+                "4.7.0", "train.parquet", "wget", "curl ", "hashlib", "sha256_file", "kagglehub"):
         assert tok not in src, tok
-    for line in src.splitlines():                                             # the only install: an attached wheel, no index
-        if "'install'" in line:
-            assert "'--no-index'" in line and "'--no-deps'" in line
-    assert "runtime='kaggle'" in src and "/kaggle/working" in src
+    assert "runtime='kaggle'" in src and "/kaggle/working" in src and "/kaggle/input" in src
+    assert "('runtime', 'src', 'casmi_runtime', 'named_inference.py')" in src                  # model found by file name, no slug
+    for key in ("'bundle_version'] == 'v2-A7'", "'CONFIG_HASH'] == '60174e39a2a3c6b4'", "'freeze_status'] == 'FROZEN'",
+                "self_test_downstream_exact'] is True", "submission_validation_status'] == 'PASS'"):
+        assert key in src, key
+    assert "feature_mismatches'] == 3" not in src                                              # 0 or any drift count is fine
     assert "google.colab" not in raw and "drive.mount" not in raw                        # not even in markdown
 
 
@@ -192,6 +302,15 @@ def test_frozen_code_precedence_in_the_run_and_notebooks():
     run_src = run_src[run_src.index("def run_frozen_inference"):]                          # the function body, not the docstring
     assert run_src.index("load_frozen_code(") < run_src.index("Bundle(") < run_src.index("select_backend(") < run_src.index("run_inference(")
     assert run_src.index("validate_submission(") < run_src.index("write_submission(")
+    named = (ROOT / "src" / "casmi_runtime" / "named_inference.py").read_text(encoding="utf-8")
+    named = named[named.index("def run_named_inference"):]
+    order = ["resolve_named_inputs(", "load_frozen_code(", "check_bundle_presence(", "Bundle(bundle_dir, verify=False)", "check_bundle_identity(",
+             "check_frozen_identity(", "load_fixture_filenames_only(", "select_backend(", "run_inference(", "aggregate_molecules(",
+             "validate_submission(", "write_submission(", '"run_report.json"', "compare_to_anchor(", "ANCHOR_REPORT, anchor)"]
+    pos = [named.index(t) for t in order]
+    assert pos == sorted(pos), dict(zip(order, pos))
+    assert "verify_bundle(" not in named and "verify=True" not in named and "sha256_file(" not in named
+    assert _checker().check_entry_module(ROOT / "src" / "casmi_runtime" / "named_inference.py") == []
     for nb in ("01_colab_inference.ipynb", "02_kaggle_inference.ipynb"):
         assert "casmi_infer_source" in "\n".join(_code(nb))
 
@@ -276,6 +395,150 @@ def test_stale_outputs_block_the_run(tmp_path):
     with pytest.raises(ri.InferenceBlocked):
         ri.run_frozen_inference(cfg, log=lambda *a: None)
     assert (cfg.work_dir / "submission.csv").read_text() == "old"
+
+
+def _named_inputs(root, bundle_format="casmi-modeA-bundle-1"):
+    (root / "bundle-ds" / "bundle").mkdir(parents=True)
+    (root / "bundle-ds" / "bundle" / "manifest.json").write_text(json.dumps({"bundle_format": bundle_format}), encoding="utf-8")
+    (root / "comp").mkdir()
+    for n in ("test.parquet", "sample_submission.csv", "train.parquet"):
+        (root / "comp" / n).write_bytes(b"0")
+    return root
+
+
+def test_named_inputs_are_resolved_by_filename(tmp_path):
+    root = _named_inputs(tmp_path / "in")
+    (root / "bundle-ds" / "bundle" / "selftest").mkdir()
+    (root / "bundle-ds" / "bundle" / "selftest" / "test.parquet").write_bytes(b"0")      # inside the bundle: ignored
+    b, t, s = rn.resolve_named_inputs(root)
+    assert b == root / "bundle-ds" / "bundle" and t == root / "comp" / "test.parquet" and s == root / "comp" / "sample_submission.csv"
+    (root / "other").mkdir()
+    (root / "other" / "test.parquet").write_bytes(b"0")
+    with pytest.raises(ri.InferenceBlocked):                                  # ambiguous
+        rn.resolve_named_inputs(root)
+    with pytest.raises(ri.InferenceBlocked):                                  # no CASMI bundle
+        rn.resolve_named_inputs(_named_inputs(tmp_path / "in2", bundle_format="other"))
+
+
+def test_bundle_presence_check_blocks_an_incomplete_upload(tmp_path):
+    inv = json.loads(INVENTORY.read_text(encoding="utf-8"))
+    b = tmp_path / "bundle"
+    listed = [_strip_bundle(r) for r in inv["frozen_bundle"]["required"] if r != "bundle/manifest.json"]
+    for rel in listed:
+        (b / rel).parent.mkdir(parents=True, exist_ok=True)
+        (b / rel).write_text("x", encoding="utf-8")
+    (b / "code" / "casmi" / "spectra" / "__init__.py").write_text("", encoding="utf-8")        # empty package init: legitimate
+    man = {"files": {r: "0" for r in listed}}
+    rep = rn.check_bundle_presence(b, man)
+    assert rep["n_manifest_files"] == len(listed) and rep["bundle_integrity_mode"] == "FILENAMES_ONLY" and rep["bundle_hash_verification"] is False
+    (b / "ref_meta.parquet").write_text("", encoding="utf-8")                                   # an empty DATA file is not
+    with pytest.raises(ri.InferenceBlocked):
+        rn.check_bundle_presence(b, man)
+    (b / "ref_meta.parquet").write_text("x", encoding="utf-8")
+    (b / "selftest" / "expected_probs.parquet").unlink()
+    with pytest.raises(ri.InferenceBlocked):
+        rn.check_bundle_presence(b, man)
+
+
+def test_named_run_blocks_and_writes_only_the_anchor_report(tmp_path):
+    cfg = rc.RuntimeConfig(runtime="kaggle", input_root=tmp_path / "in", work_dir=tmp_path / "out")
+    cfg.input_root.mkdir(parents=True)
+    with pytest.raises(ri.InferenceBlocked):
+        rn.run_named_inference(cfg, log=lambda *a: None)
+    anchor = json.loads((cfg.work_dir / "kaggle_anchor_report.json").read_text())
+    assert anchor["anchor_status"] == "FAIL" and anchor["failed_stage"] == "resolve_inputs" and not anchor["submission_performed"]
+    assert anchor["bundle_integrity_mode"] == "FILENAMES_ONLY" and anchor["fixture_hash_verification"] is False
+    assert sorted(p.name for p in cfg.work_dir.iterdir()) == ["kaggle_anchor_report.json"]    # nothing else is written
+    with pytest.raises(ri.InferenceBlocked):                                  # stale outputs are never overwritten
+        rn.run_named_inference(cfg, log=lambda *a: None)
+
+
+def _model_payload(root, name="enveda-casmi-v2-a7/sklearn/full-e2e/1"):
+    payload = root / name
+    for rel in ("runtime/src/casmi_runtime/named_inference.py", "bundle/config.json", "bundle/code/casmi_infer/__init__.py"):
+        (payload / rel).parent.mkdir(parents=True, exist_ok=True)
+        (payload / rel).write_text("x", encoding="utf-8")
+    return payload
+
+
+def test_kaggle_model_inputs_are_resolved_by_filename(tmp_path):
+    root = tmp_path / "input"
+    payload = _model_payload(root)
+    (payload / "bundle" / "selftest").mkdir()
+    (payload / "bundle" / "selftest" / "test.parquet").write_bytes(b"0")                       # inside the model: ignored
+    (root / "competition").mkdir()
+    for n in ("test.parquet", "sample_submission.csv", "train.parquet"):
+        (root / "competition" / n).write_bytes(b"0")
+    got = rn.resolve_kaggle_model_inputs(root)
+    assert got == {"MODEL_PAYLOAD_ROOT": payload, "RUNTIME_SRC": payload / "runtime" / "src", "BUNDLE_ROOT": payload / "bundle",
+                   "TEST_PATH": root / "competition" / "test.parquet", "SAMPLE_SUBMISSION_PATH": root / "competition" / "sample_submission.csv"}
+    (root / "extra").mkdir()
+    (root / "extra" / "sample_submission.csv").write_bytes(b"0")
+    with pytest.raises(ri.InferenceBlocked):                                  # ambiguous competition file
+        rn.resolve_kaggle_model_inputs(root)
+    (root / "extra" / "sample_submission.csv").unlink()
+    _model_payload(root, "another-model/sklearn/full-e2e/1")
+    with pytest.raises(ri.InferenceBlocked):                                  # two attached models
+        rn.resolve_kaggle_model_inputs(root)
+
+
+_EXACT = {k: 0 for k in rb.HARD_MISMATCH_KEYS}
+
+
+def test_selftest_policy_accepts_feature_only_drift_only_when_downstream_exact():
+    strict = rb.apply_selftest_policy({**_EXACT, "feature_mismatches": 0, "passed": True}, True)
+    assert strict["passed"] and strict["strict_passed"] and strict["downstream_exact"] and not strict["accepted_feature_only_drift"]
+    drift = {**_EXACT, "feature_mismatches": 3, "passed": False}
+    ok = rb.apply_selftest_policy(drift, True)
+    assert ok["passed"] and not ok["strict_passed"] and ok["downstream_exact"] and ok["accepted_feature_only_drift"] and ok["feature_mismatches"] == 3
+    assert not rb.apply_selftest_policy(drift, False)["passed"]               # strict mode never accepts drift
+    for k in rb.HARD_MISMATCH_KEYS:                                           # ANY hard mismatch refuses
+        bad = rb.apply_selftest_policy({**drift, k: 1}, True)
+        assert not bad["passed"] and not bad["downstream_exact"], k
+    assert not rb.apply_selftest_policy({**drift, "error": "boom"}, True)["passed"]
+    missing = dict(drift)
+    missing.pop("rank_mismatches")
+    assert not rb.apply_selftest_policy(missing, True)["passed"]              # an absent hard key is never exact
+
+
+def test_select_backend_records_drift_acceptance():
+    fz, st = _frozen()
+    runner = lambda b, be: {**_EXACT, "backend": be, "feature_mismatches": 3, "passed": False}
+    rec = rb.select_backend(_bundle(), fz, GPU_HW, "gpu", runner=runner, log=lambda *a: None, allow_feature_only_drift=True)
+    assert rec["actual_backend"] == "numba" and not rec["gpu_used"] and st["set"] == ["numba"]
+    assert rec["downstream_exact"] and not rec["strict_passed"] and rec["accepted_feature_only_drift"] and rec["feature_mismatches"] == 3
+    with pytest.raises(rb.BackendSelectionError):                             # the same result without the policy: STOP
+        rb.select_backend(_bundle(), fz, GPU_HW, "gpu", runner=runner, log=lambda *a: None)
+
+
+def test_fixture_is_loaded_without_hashing(tmp_path):
+    mod = SimpleNamespace(FIXTURE_DIR="selftest", FIXTURE_FORMAT="casmi-selftest-2", FILES=rn.SELFTEST_FIXTURES)
+    d = tmp_path / "selftest"
+    d.mkdir()
+    (d / "fixture_manifest.json").write_text(json.dumps({"format": "casmi-selftest-1"}), encoding="utf-8")
+    with pytest.raises(ri.InferenceBlocked):                                  # old fixture format
+        rn.load_fixture_filenames_only(tmp_path, mod)
+    (d / "fixture_manifest.json").write_text(json.dumps({"format": "casmi-selftest-2", "files": {"x": "deadbeef"}}), encoding="utf-8")
+    with pytest.raises(ri.InferenceBlocked):                                  # missing fixtures, reported by NAME
+        rn.load_fixture_filenames_only(tmp_path, mod)
+
+
+def test_anchor_comparison_and_frozen_identity():
+    exp = rn.KAGGLE_ANCHOR_EXPECTED
+    assert exp["n_spectra"] == 1213 and exp["n_molecules"] == 400 and exp["candidate_pair_count"] == 471173
+    assert exp["similarity_evaluations"] == 2057028 and exp["submission_rows"] == 400 and exp["unsupported_adducts"] == []
+    assert not {"runtime_seconds", "peak_ram", "python_version", "gpu_name", "feature_mismatches"} & set(exp)
+    assert rn.compare_to_anchor(dict(exp), exp) == {}
+    assert set(rn.compare_to_anchor({**exp, "n_spectra": 1212, "unsupported_adducts": ["[M+X]+"]}, exp)) == {"n_spectra", "unsupported_adducts"}
+    cfg = {"bundle_version": "v2-A7", "CONFIG_HASH": "60174e39a2a3c6b4", "model_id": "V1_TL_1K_TESTSIM_STRICT",
+           "aggregator_name": "MOST_CONFIDENT_SPECTRUM", "calibration_temperature": 1.1947045372735254}
+    info = {"model_id": "V1_TL_1K_TESTSIM_STRICT", "freeze_status": "FROZEN"}
+    contract = {"name": "MOST_CONFIDENT_SPECTRUM", "temperature": 1.1947045372735254}
+    assert rn.check_frozen_identity(cfg, info, contract)
+    for bad_cfg, bad_info, bad_contract in (({**cfg, "calibration_temperature": 1.19}, info, contract), ({**cfg, "CONFIG_HASH": "x"}, info, contract),
+                                            (cfg, {**info, "freeze_status": "PROVISIONAL"}, contract), (cfg, info, {**contract, "name": "RRF"})):
+        with pytest.raises(ri.InferenceBlocked):
+            rn.check_frozen_identity(bad_cfg, bad_info, bad_contract)
 
 
 def test_missing_bundle_blocks_and_records_failure(tmp_path):

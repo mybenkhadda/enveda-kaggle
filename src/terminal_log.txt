@@ -1,0 +1,181 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260928224531
+Username: MOHAMEDYASSINE\myben
+RunAs User: MOHAMEDYASSINE\myben
+Configuration Name: 
+Machine: MOHAMEDYASSINE (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -noexit -command try { . "c:\Users\myben\AppData\Local\Programs\Microsoft VS Code\2242ebbb54\resources\app\out\vs\workbench\contrib\terminal\common\scripts\shellIntegration.ps1" } catch {}
+Process ID: 22844
+PSVersion: 5.1.26100.9444
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9444
+BuildVersion: 10.0.26100.9444
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcript started, output file is terminal_log.txt
+(casmi2026)
+]633;D;0]633;A]633;P;Cwd=C:\x5cUsers\x5cmyben\x5cOneDrive\x5cDocuments\x5cEnveda\x5csrcPS C:\Users\myben\OneDrive\Documents\Enveda\src> ]633;B
+PS># 0) Activate environment
+conda activate casmi2026
+
+# Helpers
+export PY="$(which python)"
+export NBX="jupyter nbconvert --to notebook --execute --inplace"
+
+# 1) Run tests
+$PY -m pytest -q
+
+# 2) Export the new v2-A7 bundle
+$NBX \
+  --ExecutePreprocessor.timeout=28800 \
+  src/11_00_export_bundle.ipynb
+
+# 3) Validate bundle + A7 self-test
+PYTHONPATH= \
+$PY scripts/v63_bundle_check.py \
+  --bundle bundle \
+  --expect MOST_CONFIDENT_SPECTRUM
+
+# 4) Run inference parity notebook
+$NBX \
+  --ExecutePreprocessor.timeout=14400 \
+  src/11_01_inference_parity.ipynb
+
+# 5) Prepare local Kaggle dry-run folders
+mkdir -p kaggle_dryrun/input
+mkdir -p kaggle_dryrun/working
+
+# 6) Point notebook to local Kaggle-like paths
+export CASMI_KAGGLE_INPUT="$PWD/kaggle_dryrun/input"
+export CASMI_KAGGLE_WORKING="$PWD/kaggle_dryrun/working"
+
+# 7) Run Kaggle submission notebook locally
+$NBX \
+  --ExecutePreprocessor.timeout=28800 \
+  kaggle/kaggle_submit.ipynb
+
+# 8) Inspect run report
+cat kaggle_dryrun/working/run_report.json
+
+# 9) Inspect submission
+head -n 10 kaggle_dryrun/working/submission.csv
+
+# 10) Basic file checks
+ls -lh kaggle_dryrun/working/run_report.json
+ls -lh kaggle_dryrun/working/submission.csv
+At line:9 char:5
++ $PY -m pytest -q
++     ~~
+Unexpected token '-m' in expression or statement.
+
+At line:9 char:8
++ $PY -m pytest -q
++        ~~~~~~
+Unexpected token 'pytest' in expression or statement.
+
+At line:12 char:6
++ $NBX \
++      ~
+Unexpected token '\' in expression or statement.
+
+At line:13 char:5
++   --ExecutePreprocessor.timeout=28800 \
++     ~
+Missing expression after unary operator '--'.
+
+At line:13 char:5
++   --ExecutePreprocessor.timeout=28800 \
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unexpected token 'ExecutePreprocessor.timeout=28800' in expression or statement.
+
+At line:18 char:5
++ $PY scripts/v63_bundle_check.py \
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unexpected token 'scripts/v63_bundle_check.py' in expression or statement.
+
+At line:19 char:5
++   --bundle bundle \
++     ~
+Missing expression after unary operator '--'.
+
+At line:19 char:5
++   --bundle bundle \
++     ~~~~~~
+Unexpected token 'bundle' in expression or statement.
+
+At line:20 char:5
++   --expect MOST_CONFIDENT_SPECTRUM
++     ~
+Missing expression after unary operator '--'.
+
+At line:20 char:5
++   --expect MOST_CONFIDENT_SPECTRUM
++     ~~~~~~
+Unexpected token 'expect' in expression or statement.
+
+Not all parse errors were reported.  Correct the reported errors and try again.
+At line:9 char:5
++ $PY -m pytest -q
++     ~~
+Unexpected token '-m' in expression or statement.
+
+At line:9 char:8
++ $PY -m pytest -q
++        ~~~~~~
+Unexpected token 'pytest' in expression or statement.
+
+At line:12 char:6
++ $NBX \
++      ~
+Unexpected token '\' in expression or statement.
+
+At line:13 char:5
++   --ExecutePreprocessor.timeout=28800 \
++     ~
+Missing expression after unary operator '--'.
+
+At line:13 char:5
++   --ExecutePreprocessor.timeout=28800 \
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unexpected token 'ExecutePreprocessor.timeout=28800' in expression or statement.
+
+At line:18 char:5
++ $PY scripts/v63_bundle_check.py \
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Unexpected token 'scripts/v63_bundle_check.py' in expression or statement.
+
+At line:19 char:5
++   --bundle bundle \
++     ~
+Missing expression after unary operator '--'.
+
+At line:19 char:5
++   --bundle bundle \
++     ~~~~~~
+Unexpected token 'bundle' in expression or statement.
+
+At line:20 char:5
++   --expect MOST_CONFIDENT_SPECTRUM
++     ~
+Missing expression after unary operator '--'.
+
+At line:20 char:5
++   --expect MOST_CONFIDENT_SPECTRUM
++     ~~~~~~
+Unexpected token 'expect' in expression or statement.
+
+Not all parse errors were reported.  Correct the reported errors and try again.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : UnexpectedToken
+
+(casmi2026)
+]633;D;0]633;A]633;P;Cwd=C:\x5cUsers\x5cmyben\x5cOneDrive\x5cDocuments\x5cEnveda\x5csrcPS C:\Users\myben\OneDrive\Documents\Enveda\src> ]633;B
+(casmi2026) Stop-Transcript
+**********************
+Windows PowerShell transcript end
+End time: 20260928224606
+**********************

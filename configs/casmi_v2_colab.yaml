@@ -1,0 +1,109 @@
+# CASMI v2 (Class-1 + Class-2) -- Colab-first configuration.
+#
+# Loaded by `casmi.workspace.config.load_v2_config`. Every path below is RELATIVE to `drive_root`
+# unless it is absolute. `drive_root` itself is overridden by the ENVEDA_DRIVE_ROOT environment
+# variable, and `repo_root` by ENVEDA_REPO_ROOT. Nothing here points at a local Windows path.
+#
+# Persistent results go to Drive (drive_root/...). `scratch_dir` (default /content/scratch) is for
+# disposable temporaries only -- never the only copy of a result.
+
+schema_version: casmi-v2-config-1
+
+paths:
+  drive_root: /content/drive/MyDrive/EnvedaCASMI
+  repo_root: /content/drive/MyDrive/EnvedaCASMI/repo
+  raw_data_dir: data/raw                  # train.parquet (competition file); test.parquet is NOT used for validation
+  processed_dir: data/processed           # train_spectrum_metadata.parquet, connectivity_folds.parquet, ... (uploaded from local data/processed)
+  interim_dir: data/interim               # molecule_mass_variants.parquet, dev_queries.parquet, structure_table.parquet (uploaded from local data/interim)
+  external_dir: data/external             # user-supplied COCONUT / PubChem files (never downloaded by code)
+  bundle_dir: bundle                      # the frozen v2-A7 bundle (reference library peaks + connectivities)
+  candidate_db_dir: candidates
+  embeddings_dir: embeddings
+  checkpoints_dir: checkpoints
+  predictions_dir: predictions
+  reports_dir: reports
+  cache_dir: cache
+  experiments_dir: experiments
+  scratch_dir: /content/scratch
+
+inputs:
+  train_spectrum_metadata: data/processed/train_spectrum_metadata.parquet
+  connectivity_folds: data/processed/connectivity_folds.parquet
+  dev_queries: data/interim/candidate_generation/dev_queries.parquet
+  molecule_mass_variants: data/interim/candidate_generation/molecule_mass_variants.parquet
+  structure_table: data/interim/structure_table.parquet
+
+runtime:
+  seed: 42
+  deterministic: true
+  num_workers: 2                          # Colab standard runtime has 2 vCPUs; raise on high-CPU runtimes
+  amp: auto                               # auto | bf16 | fp16 | off  (auto: bf16 only where supported)
+  torch_compile: false
+
+# ---------------------------------------------------------------------------------------------
+# Phase 2 -- hidden-like validation regimes
+# ---------------------------------------------------------------------------------------------
+validation:
+  split_seed: 20261001                    # persisted with the regime table; never re-randomized per run
+  regime_fractions: {C1: 0.34, C2: 0.33, C3: 0.33}   # of ELIGIBLE truth connectivities per fold
+  hidden_scope: fold                      # fold: all hidden truths of a fold hidden at once (recommended)
+  c1_reference_protocol: test_simulated_strict   # frozen protocol: self + T1 + T2 references excluded
+  c1_min_truth_spectra: 2                 # truth needs >= 1 OTHER spectrum to be a Class-1 query
+  c2_require_external_source: true        # C2 truth must also exist in a non-TRAIN source (see class2_split)
+  max_queries_per_regime_per_fold: null   # optional cap for fast iterations (deterministic subsample)
+  composite_weights_PROVISIONAL: {C1: 0.15, C2: 0.60, C3: 0.25}
+  mass_bins_da: [0, 200, 300, 400, 500, 600, 800, 1000, 1500, 5000]
+  pool_size_bins: [0, 1, 10, 25, 100, 500, 2000, 10000, 1000000000]
+
+# ---------------------------------------------------------------------------------------------
+# Phase 3 -- external structure universe
+# ---------------------------------------------------------------------------------------------
+universe:
+  bucket_prefix_len: 1                    # connectivity-key prefix buckets (1 -> 26 buckets, 2 -> 676)
+  chunk_records: 200000                   # standardization chunk size (resumable unit)
+  n_jobs: -1                              # RDKit workers (-1 = all CPUs)
+  max_source_ids_per_candidate: 20        # provenance list cap (full count kept in n_source_records)
+  filters:
+    apply_to_train: false                 # TRAIN structures keep the training contract (never filtered)
+    min_exact_mass: 150.0
+    max_exact_mass: 1200.0
+    organic_only: true
+    organic_elements: [C, H, N, O, S, P, F, Cl, Br, I, Si, B, Se]
+    neutral_only: true
+    single_component_only: true
+  prefilter:                              # cheap pre-RDKit filter from the SOURCE formula column (formula_col in the source config)
+    by_source_formula: true               # unparseable / missing formulas always pass to the real standardizer
+    mass_margin_da: 1.0
+  sources:                                # template = column mapping (casmi.candidates.sources.SourceConfig, relative to repo_root)
+    - template: configs/v6/coconut_source.json
+      file: data/external/coconut.csv     # relative to drive_root; a missing file is reported and skipped
+    # - template: configs/v6/pubchem_source.json
+    #   file: data/external/pubchem_subset.csv
+
+# ---------------------------------------------------------------------------------------------
+# Phase 4 -- candidate recall
+# ---------------------------------------------------------------------------------------------
+recall:
+  ppm_grid: [2, 3, 5, 10, 20]
+  k_values: [25, 100, 500]
+  exact_pool_counts: true                 # unique connectivities per window (slower than variant-row counts)
+
+# ---------------------------------------------------------------------------------------------
+# Phase 5 -- analog propagation baseline
+# ---------------------------------------------------------------------------------------------
+analog:
+  bin_width_da: 0.1                       # = frozen similarity.bin_width_da
+  peak_tol_da: 0.02                       # = frozen similarity.peak_tol_da
+  intensity_power: 1.0                    # 1.0 = frozen representation (no transform)
+  prefilter_top_n: 200                    # per channel (fragment cosine, neutral-loss cosine)
+  rescore_top_n: 50                       # modified-cosine rescoring of the prefiltered union
+  top_k_analogs: 10                       # analogs propagated to candidates
+  same_polarity_only: true
+  max_precursor_delta_da: 300.0
+  query_batch_size: 64
+  device: auto                            # auto | cpu | cuda (torch sparse prefilter on GPU if available)
+  fingerprint: {radius: 2, n_bits: 2048}
+  support_tanimoto_threshold: 0.5
+  similarity_weight_power: 2.0
+  candidate_ppm: 10.0                     # candidate pool window for analog features
+  max_candidates_per_query: 2000          # nearest-by-ppm cap (logged, never silent)

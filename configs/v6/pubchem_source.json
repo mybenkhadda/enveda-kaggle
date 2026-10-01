@@ -1,0 +1,18 @@
+{
+  "_comment": "TEMPLATE. Obtain the PubChem file MANUALLY (no code here downloads anything) and VERIFY every column name against your file header -- the schema is configured, never guessed. Keys starting with '_' are ignored. `path` is set by notebook 12 from casmi_v2_colab.yaml (universe.sources[].file).",
+  "_scale_note": "Full PubChem (~120M compounds) cannot be tautomer-canonicalized in a Colab session in reasonable time (RDKit ~ms per molecule per core). Prefer a curated subset first (e.g. a PubChemLite export, or CIDs pre-selected by mass range + literature/patent counts), keep `formula_col` set so the cheap formula-mass prefilter can skip out-of-range rows before RDKit.",
+  "_example_cid_smiles_tsv": {"format": "tsv", "id_col": "CID", "smiles_col": "SMILES", "delimiter": "\t"},
+  "source": "PUBCHEM",
+  "path": "",
+  "format": "csv",
+  "id_col": "CID",
+  "smiles_col": "SMILES",
+  "name_col": null,
+  "formula_col": "MolecularFormula",
+  "metadata_cols": [],
+  "delimiter": null,
+  "smi_has_header": false,
+  "chunksize": 200000,
+  "max_records": null,
+  "notes": "PubChem export supplied by the user"
+}

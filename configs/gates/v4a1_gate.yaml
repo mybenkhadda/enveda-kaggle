@@ -1,0 +1,161 @@
+# v4a.1 fixed gate specification. Immutable during execution -- only 10v4a1_s4_gate.ipynb
+# reads this file; s1/s2/s3 must not modify it. Every requirement's `results_key` must be
+# written by a `casmi.results.record(...)` call in the stage notebook responsible for it (see
+# RUN_GUIDE.md's traceability table) -- a key this file references but no notebook records
+# evaluates to NOT_PROVEN, never PASS. `condition` supports: "== true", "== false", "== N",
+# "!= N", "<= N", ">= N", "< N", "> N", "exists".
+requirements:
+  - id: G1
+    description: C1 strict HOST reproducibility PASS
+    results_key: c1.host.reproducibility_pass
+    condition: "== true"
+
+  - id: G2
+    description: HOST C9 independent brute-force reference-ID mismatches == 0
+    results_key: c9.host.ref_mismatches
+    condition: "== 0"
+
+  - id: G3
+    description: HOST C9 independent brute-force feature mismatches == 0
+    results_key: c9.host.feature_mismatches
+    condition: "== 0"
+
+  - id: G4
+    description: HOST C9 independent brute-force shared-similarity mismatches == 0
+    results_key: c9.host.similarity_mismatches
+    condition: "== 0"
+
+  - id: G5
+    description: DEV C9 independent brute-force reference-ID mismatches == 0
+    results_key: c9.dev.ref_mismatches
+    condition: "== 0"
+
+  - id: G6
+    description: DEV C9 independent brute-force feature mismatches == 0
+    results_key: c9.dev.feature_mismatches
+    condition: "== 0"
+
+  - id: G7
+    description: DEV C9 independent brute-force shared-similarity mismatches == 0
+    results_key: c9.dev.similarity_mismatches
+    condition: "== 0"
+
+  - id: G8
+    description: DEV QCR persisted and fingerprinted
+    results_key: dev.qcr_persisted
+    condition: "== true"
+
+  - id: G9
+    description: 4 DEV protocol feature tables persisted and fingerprinted
+    results_key: dev.protocol_tables_persisted
+    condition: "== 4"
+
+  - id: G10
+    description: DEV missing-query report exists
+    results_key: dev.missing_query_report_exists
+    condition: "== true"
+
+  - id: G11
+    description: C3a QCR evidence integrity PASS (1,000 sampled QCR rows recomputed from raw peaks)
+    results_key: c3a.pass
+    condition: "== true"
+
+  - id: G12
+    description: C3b cache integrity PASS (1,000 sampled cache entries recomputed from raw peaks)
+    results_key: c3b.pass
+    condition: "== true"
+
+  - id: G13
+    description: C3c true-cold-timing benchmark recorded
+    results_key: c3c.recorded
+    condition: "== true"
+
+  - id: G14
+    description: C4 source-stratified tier audit complete
+    results_key: c4.audit_complete
+    condition: "== true"
+
+  - id: G15
+    description: C4 pre-registered near_dup_strict verdict recorded
+    results_key: c4.verdict_recorded
+    condition: "== true"
+
+  - id: G16
+    description: C5 T3 impostor audit complete
+    results_key: c5.audit_complete
+    condition: "== true"
+
+  - id: G17
+    description: C5 conclusion recorded
+    results_key: c5.conclusion_recorded
+    condition: "== true"
+
+  - id: G18
+    description: C6 row-weighted (not group-mean-averaged) cap/ordering rate recorded
+    results_key: c6.row_weighted_rate_recorded
+    condition: "== true"
+
+  - id: G19
+    description: C6 A/B/C cap-variant diagnostic table exists
+    results_key: c6.abc_table_exists
+    condition: "== true"
+
+  - id: G20
+    description: C7 tie-handling attribution recorded
+    results_key: c7.tie_attribution_recorded
+    condition: "== true"
+
+  - id: G21
+    description: C8 censored eligible-count analysis complete
+    results_key: c8.eligible_count_analysis_complete
+    condition: "== true"
+
+  - id: G22
+    description: C8 k=1/3/5 reference-matched analysis complete
+    results_key: c8.k_matched_analysis_complete
+    condition: "== true"
+
+  - id: G23
+    description: C8 truth reference source-mix analysis complete
+    results_key: c8.source_mix_analysis_complete
+    condition: "== true"
+
+  - id: G24
+    description: V0 diagnostic model load-or-reproduce PASS
+    results_key: v0.load_or_reproduce_pass
+    condition: "== true"
+
+  - id: G25
+    description: pytest failures == 0
+    results_key: pytest.failures
+    condition: "== 0"
+
+  - id: G26
+    description: pytest errors == 0
+    results_key: pytest.errors
+    condition: "== 0"
+
+  - id: G27
+    description: warm s1 (HOST) wall time <= 60 seconds
+    results_key: timing.warm_s1_seconds
+    condition: "<= 60"
+
+  - id: G28
+    description: warm s1 (HOST) new similarity computations == 0
+    results_key: timing.warm_s1_similarity_calls
+    condition: "== 0"
+
+  - id: G29
+    description: warm s2 (DEV) wall time <= 60 seconds
+    results_key: timing.warm_s2_seconds
+    condition: "<= 60"
+
+  - id: G30
+    description: warm s2 (DEV) new similarity computations == 0
+    results_key: timing.warm_s2_similarity_calls
+    condition: "== 0"
+
+  - id: G31
+    description: warm s3 + s4 combined wall time <= 120 seconds
+    results_key: timing.warm_s3_s4_seconds
+    condition: "<= 120"
