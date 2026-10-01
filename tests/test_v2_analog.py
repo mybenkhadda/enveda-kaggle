@@ -119,6 +119,35 @@ def test_fingerprint_cache_does_not_persist_unknown_smiles(tmp_path):
     bits, valid = c.get(["AAAAAAAAAAAAAA", "BBBBBBBBBBBBBB"], lambda miss: ["CCO" if m.startswith("A") else None for m in miss])
     assert valid.tolist() == [True, False] and bits[1].sum() == 0
     assert len(c) == 1                                              # B was not cached as "invalid forever"
+    c.flush()                                                       # writes are buffered until flush()
     c2 = FingerprintCache(tmp_path, radius=2, n_bits=256)           # reload from shards
     b2, v2 = c2.get(["AAAAAAAAAAAAAA"], lambda miss: pytest.fail("must not recompute a cached key"))
     assert v2.all() and np.array_equal(b2[0], bits[0])
+
+
+def test_fingerprint_cache_buffers_writes_and_compacts(tmp_path):
+    pytest.importorskip("rdkit")
+    smiles = {f"K{i:013d}": "C" * (i % 7 + 1) + "O" for i in range(200)}
+    calls = []
+
+    def smiles_of(keys):
+        calls.append(len(keys))
+        return [smiles[k] for k in keys]
+
+    c = FingerprintCache(tmp_path, radius=2, n_bits=256)
+    keys = list(smiles)
+    for s in range(0, 200, 10):                                      # 20 small batches -> no shard yet
+        b, v = c.get(keys[s:s + 10], smiles_of)
+        assert v.all()
+    assert len(c) == 200 and not list(c.dir.glob("shard-*.npz"))
+    b2, _ = c.get(keys[:10], smiles_of)                              # served from the pending buffer
+    assert sum(calls) == 200 and (b2 == c.get(keys[:10], smiles_of)[0]).all()
+    assert c.flush() == 200 and len(list(c.dir.glob("shard-*.npz"))) == 1
+    c2 = FingerprintCache(tmp_path, radius=2, n_bits=256)
+    assert len(c2) == 200 and (c2.get(keys[:10], smiles_of)[0] == b2).all() and sum(calls) == 200
+    for i in range(40):                                              # many shards -> compacted on load
+        c2.get([f"X{i:013d}"], lambda ks: ["CCN"])
+        c2.flush()
+    assert len(list(c2.dir.glob("shard-*.npz"))) == 41
+    c3 = FingerprintCache(tmp_path, radius=2, n_bits=256)
+    assert len(c3) == 240 and len(list(c3.dir.glob("shard-*.npz"))) == 1

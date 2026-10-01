@@ -8,6 +8,24 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
+def table_to_pandas(table):
+    """`pyarrow.Table` -> pandas, robust across pandas 2.x / 3.x.
+
+    pandas 3 can store list columns in the parquet pandas-metadata as `list<item: string>[pyarrow]`, a dtype
+    string it cannot parse back (TypeError: data type ... not understood). Retry without the pandas metadata
+    (every v2 artifact is written with index=False, so nothing is lost)."""
+    try:
+        return table.to_pandas()
+    except TypeError:
+        return table.to_pandas(ignore_metadata=True)
+
+
+def read_parquet_safe(path, columns=None, filters=None):
+    """`pd.read_parquet` replacement that survives the pandas-2/3 list-dtype metadata mismatch (see
+    `table_to_pandas`). Use it for every artifact that contains list columns."""
+    return table_to_pandas(pq.read_table(path, columns=columns, filters=filters))
+
+
 def get_parquet_schema(path):
     """The pyarrow schema of `path`, without reading any row data."""
     return pq.ParquetFile(path).schema_arrow

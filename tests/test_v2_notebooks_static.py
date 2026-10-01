@@ -35,17 +35,31 @@ def test_no_local_paths_or_competition_test_inputs(name):
     assert "drive.mount" in code and "ENVEDA_DRIVE_ROOT" in code
 
 
-@pytest.mark.parametrize("name", V2[1:])
+@pytest.mark.parametrize("name", V2)
 def test_results_go_to_drive_paths(name):
     _, cells = _cells(name)
     code = "\n".join(cells)
-    assert "/content/" not in code.replace("/content/drive", "")    # only Drive (+ config scratch) -- no unique results in /content
+    allowed = ("/content/drive", "/content/Enveda", "/content/enveda_work")   # Drive, git clone, disposable scratch
+    rest = code
+    for a in allowed:
+        rest = rest.replace(a, "")
+    assert "/content/" not in rest                                   # no unique results anywhere else under /content
     assert "P." in code                                              # every artifact path comes from the v2 config
+
+
+@pytest.mark.parametrize("name", V2)
+def test_source_comes_from_git_not_drive(name):
+    _, cells = _cells(name)
+    code = "\n".join(cells)
+    assert "github.com/" in code and "/content/Enveda" in code
+    assert "DRIVE_ROOT / 'repo'" not in code and "EnvedaCASMI/repo" not in code
 
 
 @pytest.mark.parametrize("name", V2)
 def test_cells_stay_orchestration_sized(name):
     _, cells = _cells(name)
+    # the generated bootstrap cell (casmi.workspace.notebook_cells) must be self-contained -> exempt
+    cells = [c for c in cells if not c.startswith("# >>> CASMI BOOTSTRAP")]
     assert max(len(c.splitlines()) for c in cells) <= 40
     assert not any(ast.parse(c).body and any(isinstance(n, ast.ClassDef) for n in ast.walk(ast.parse(c))) for c in cells)
 

@@ -83,6 +83,9 @@ def test_bucketed_build_matches_in_memory(tmp_path):
     assert rec["bucket"] == "A"
     man = finalize_universe(tmp_path / "u", buckets)
     assert man["n_candidates"] == 3
+    src = man["source_summary"]                                    # embedded: C2 validity is decidable from the manifest alone
+    assert src["n_candidates"] == 3 and src["external_any"] >= 1 and sum(src["overlap"].values()) == 3
+    assert (tmp_path / "u" / "universe_manifest.json").exists() and (tmp_path / "u" / "formula_index").is_dir()
     keys = load_candidate_keys(tmp_path / "u")
     assert [k.decode() for k in keys] == [KA, KB, KC]
     assert keys_to_ids(keys, [KC, "ZZZZZZZZZZZZZZ"]).tolist() == [2, -1]
@@ -93,6 +96,19 @@ def test_bucketed_build_matches_in_memory(tmp_path):
     assert ids.tolist() == [2] and ap[0] == pytest.approx(0, abs=1e-9)
     fidx = CompactFormulaIndex.load(tmp_path / "u" / "formula_index")
     assert fidx.lookup("C15H20O3").tolist() == [2]
+
+
+def test_bucket_built_before_a_new_source_is_rebuilt(tmp_path):
+    """A TRAIN-only bucket must not be silently kept after an external source (COCONUT) is standardized."""
+    cfg = UniverseBuildConfig(bucket_prefix_len=1)
+    std_root = tmp_path / "work" / "standardized"
+    rec = merge_bucket("A", std_root, _mv(), tmp_path / "u", None, cfg)            # no external source yet
+    assert rec["n_external_records"] == 0
+    kept, _ = apply_filters(_ext(), cfg.filters)
+    _write_bucketed(kept[kept.source == "COCONUT"], std_root / "COCONUT" / "chunk-00000.parquet", 1)
+    rec2 = merge_bucket("A", std_root, _mv(), tmp_path / "u", None, cfg)
+    assert rec2["inputs_signature"] != rec["inputs_signature"] and rec2["n_external_records"] >= 1
+    assert merge_bucket("A", std_root, _mv(), tmp_path / "u", None, cfg)["finished_at"] == rec2["finished_at"]   # now resumed
 
 
 def _random_index(n=400, seed=0):

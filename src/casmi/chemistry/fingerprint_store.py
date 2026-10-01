@@ -61,62 +61,121 @@ class FingerprintCache:
     """Append-only cache: `<root>/r{radius}_b{n_bits}/shard-NNNNN.npz` (keys S14, bits, valid).
 
     `get(keys, smiles_of)` returns packed bits in the order of `keys`, computing ONLY the missing ones
-    (`smiles_of(missing_keys) -> list of SMILES`) and persisting them as a new shard."""
+    (`smiles_of(missing_keys) -> list of SMILES`).
 
-    def __init__(self, root, radius=2, n_bits=2048):
+    I/O model (Drive-safe): new fingerprints go to an in-memory PENDING buffer that is searched together with the
+    loaded table; `flush()` writes the buffer as ONE shard (callers flush once per resumable chunk; it also
+    happens automatically every `flush_rows` new rows and in `write_meta`). Nothing is ever re-read from disk after
+    construction, and a directory with more than `compact_above` shards is compacted into one shard on load --
+    the previous design wrote one tiny shard per call and reloaded EVERY shard on every miss (quadratic I/O)."""
+
+    def __init__(self, root, radius=2, n_bits=2048, flush_rows=50_000, compact_above=32):
         self.dir = Path(root) / f"r{radius}_b{n_bits}"
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.radius, self.n_bits = radius, n_bits
+        self.radius, self.n_bits, self.flush_rows, self.compact_above = radius, n_bits, flush_rows, compact_above
         self._keys = np.zeros(0, dtype="S14")
         self._bits = np.zeros((0, n_bits // 8), dtype=np.uint8)
         self._valid = np.zeros(0, dtype=bool)
+        self._pending = []                                   # list of (keys, bits, valid) not yet on disk
+        self._pk, self._pb, self._pv = self._keys, self._bits, self._valid   # sorted view of the pending buffer
         self._load()
 
+    # ---- disk -----------------------------------------------------------------------------------------------
+    def _shards(self):
+        return sorted(self.dir.glob("shard-*.npz"))
+
+    def _next_shard_path(self):
+        idx = [int(f.stem.split("-")[1]) for f in self._shards()]
+        return self.dir / f"shard-{(max(idx) + 1 if idx else 0):05d}.npz"
+
+    def _write_shard(self, keys, bits, valid, path=None):
+        path = path or self._next_shard_path()
+        tmp = self.dir / f"tmp-{path.stem}.npz"             # never matches the shard-*.npz glob if interrupted
+        np.savez(tmp, keys=keys, bits=bits, valid=valid)
+        tmp.replace(path)
+        return path
+
+    @staticmethod
+    def _sorted_unique(k, b, v):
+        order = np.argsort(k, kind="stable")
+        k, b, v = k[order], b[order], v[order]
+        first = np.concatenate([[True], k[1:] != k[:-1]]) if len(k) else np.zeros(0, bool)   # duplicates: keep first
+        return k[first], b[first], v[first]
+
     def _load(self):
+        files = self._shards()
         ks, bs, vs = [], [], []
-        for f in sorted(self.dir.glob("shard-*.npz")):
-            z = np.load(f)
-            ks.append(z["keys"]); bs.append(z["bits"]); vs.append(z["valid"])
+        for f in files:
+            with np.load(f) as z:                            # close the npz handle (Windows cannot delete open files)
+                ks.append(z["keys"]); bs.append(z["bits"]); vs.append(z["valid"])
         if ks:
-            k = np.concatenate(ks)
-            order = np.argsort(k, kind="stable")
-            k, b, v = k[order], np.concatenate(bs)[order], np.concatenate(vs)[order]
-            first = np.concatenate([[True], k[1:] != k[:-1]])            # duplicate keys across shards: keep first
-            self._keys, self._bits, self._valid = k[first], b[first], v[first]
+            self._keys, self._bits, self._valid = self._sorted_unique(np.concatenate(ks), np.concatenate(bs), np.concatenate(vs))
+        if len(files) > self.compact_above:
+            self.compact(files)
 
+    def compact(self, files=None):
+        """Rewrite the whole cache as one NEW shard, then delete the old ones. Safe to interrupt: the worst case is
+        duplicate rows across shards, which `_load` deduplicates."""
+        self.flush()
+        files = files if files is not None else self._shards()
+        new = self._write_shard(self._keys, self._bits, self._valid)
+        for f in files:
+            if f != new:
+                f.unlink()
+
+    def flush(self):
+        """Persist the pending buffer as one shard. Returns the number of rows written."""
+        if not self._pending:
+            return 0
+        k, b, v = (np.concatenate(x) for x in zip(*self._pending))
+        self._write_shard(k, b, v)
+        self._keys, self._bits, self._valid = self._sorted_unique(np.concatenate([self._keys, k]), np.concatenate([self._bits, b]),
+                                                                  np.concatenate([self._valid, v]))
+        self._pending = []
+        self._pk, self._pb, self._pv = self._keys[:0], self._bits[:0], self._valid[:0]
+        return len(k)
+
+    # ---- lookup ---------------------------------------------------------------------------------------------
     def __len__(self):
-        return len(self._keys)
+        return len(self._keys) + len(self._pk)
 
-    def _locate(self, keys):
-        k = np.asarray(pd.Series(keys, dtype=object).astype(str).to_numpy()).astype("S14")
-        pos = np.searchsorted(self._keys, k)
-        posc = np.clip(pos, 0, max(len(self._keys) - 1, 0))
-        hit = (pos < len(self._keys)) & (self._keys[posc] == k) if len(self._keys) else np.zeros(len(k), bool)
-        return k, posc, hit
+    @staticmethod
+    def _search(sorted_keys, k):
+        pos = np.searchsorted(sorted_keys, k)
+        posc = np.clip(pos, 0, max(len(sorted_keys) - 1, 0))
+        hit = (pos < len(sorted_keys)) & (sorted_keys[posc] == k) if len(sorted_keys) else np.zeros(len(k), bool)
+        return posc, hit
 
     def get(self, keys, smiles_of):
-        k, pos, hit = self._locate(keys)
-        if (~hit).any():
-            missing = np.unique(k[~hit])
+        k = np.asarray(pd.Series(keys, dtype=object).astype(str).to_numpy()).astype("S14")
+        pos, hit = self._search(self._keys, k)
+        ppos, phit = self._search(self._pk, k)
+        miss = ~hit & ~phit
+        if miss.any():
+            missing = np.unique(k[miss])
             smiles = list(smiles_of([m.decode() for m in missing]))
             known = np.array([isinstance(s, str) and len(s) > 0 for s in smiles], dtype=bool)
             if known.any():                               # a key with NO smiles available is not cached (not "invalid forever")
                 bits, valid = pack_fingerprints([s for s, ok in zip(smiles, known) if ok], self.radius, self.n_bits)
-                n = len(list(self.dir.glob("shard-*.npz")))
-                tmp = self.dir / f"tmp-{n:05d}.npz"      # never matches the shard-*.npz glob if interrupted
-                np.savez(tmp, keys=missing[known], bits=bits, valid=valid)
-                tmp.replace(self.dir / f"shard-{n:05d}.npz")
-                self._load()
-            k, pos, hit = self._locate(keys)
+                self._pending.append((missing[known], bits, valid))
+                pk, pb, pv = (np.concatenate(x) for x in zip(*self._pending))
+                self._pk, self._pb, self._pv = self._sorted_unique(pk, pb, pv)
+                if sum(len(p[0]) for p in self._pending) >= self.flush_rows:
+                    self.flush()
+                pos, hit = self._search(self._keys, k)
+                ppos, phit = self._search(self._pk, k)
         bits = np.zeros((len(k), self.n_bits // 8), dtype=np.uint8)
         valid = np.zeros(len(k), dtype=bool)
         if hit.any():
-            bits[hit] = self._bits[pos[hit]]
-            valid[hit] = self._valid[pos[hit]]
+            bits[hit], valid[hit] = self._bits[pos[hit]], self._valid[pos[hit]]
+        only_p = phit & ~hit
+        if only_p.any():
+            bits[only_p], valid[only_p] = self._pb[ppos[only_p]], self._pv[ppos[only_p]]
         return bits, valid
 
     def meta(self):
-        return {"radius": self.radius, "n_bits": self.n_bits, "n_cached": len(self), "dir": str(self.dir)}
+        return {"radius": self.radius, "n_bits": self.n_bits, "n_cached": len(self), "n_shards": len(self._shards()), "dir": str(self.dir)}
 
     def write_meta(self):
+        self.flush()
         (self.dir / "metadata.json").write_text(json.dumps(self.meta(), indent=2), encoding="utf-8")

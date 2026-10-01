@@ -39,8 +39,10 @@ import pandas as pd
 from casmi.candidates.filters import UniverseFilterConfig, apply_filters, is_organic_formula, structure_flags
 from casmi.candidates.merge import unify
 from casmi.candidates.standardize import REJECT_COLUMNS, standardize_records
+from casmi.io.parquet import read_parquet_safe, table_to_pandas
 
 UNIVERSE_SCHEMA_VERSION = "casmi-v2-universe-1"
+UNIVERSE_MANIFEST_VERSION = 2          # 2: manifest embeds `source_summary`; manifests without it are summarized on read
 KEY_LEN = 14
 V2_COLUMNS = ["connectivity_key", "representative_smiles", "exact_mass", "molecular_formula", "molecular_weight", "formal_charge",
               "num_fragments", "is_organic", "is_single_component", "train_present", "pubchem_present", "coconut_present",
@@ -194,7 +196,7 @@ def _read_bucket(std_root, bucket):
     if not files:
         return None
     t = ds.dataset([str(f) for f in files], format="parquet").to_table(filter=ds.field("bucket") == bucket)
-    return t.to_pandas()
+    return table_to_pandas(t)
 
 
 def _first_by_key(df, key="connectivity_key", order_cols=()):
@@ -257,12 +259,29 @@ def provenance_view(rows, hidden_reference_keys):
     return add_provenance_aliases(class2_candidate_view(rows, hidden_reference_keys))
 
 
-def merge_bucket(bucket, std_root, mass_variants, out_root, train_structure_table=None, cfg=UniverseBuildConfig()):
-    """Stage B for one bucket. Skips when its done-marker exists. Returns the bucket record."""
+def stage_a_signature(std_root, mass_variants, cfg=UniverseBuildConfig()):
+    """Lightweight identity of everything a bucket merge reads: the standardized stage-A chunk files (relative path +
+    size), the number of TRAIN mass variants and the merge-relevant config. A bucket built before a new external source
+    (e.g. COCONUT) was standardized has a different signature and is REBUILT -- never silently kept TRAIN-only."""
+    import hashlib
+    std_root = Path(std_root)
+    files = sorted((str(f.relative_to(std_root)).replace("\\", "/"), f.stat().st_size) for f in std_root.glob("*/chunk-*.parquet")) \
+        if std_root.is_dir() else []
+    blob = json.dumps({"files": files, "n_mass_variants": int(len(mass_variants)), "prefix_len": cfg.bucket_prefix_len,
+                       "max_ids": cfg.max_source_ids_per_candidate}, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def merge_bucket(bucket, std_root, mass_variants, out_root, train_structure_table=None, cfg=UniverseBuildConfig(), inputs_signature=None):
+    """Stage B for one bucket. Resumes (skips) only when its done-marker exists AND was written for the same stage-A
+    inputs (`stage_a_signature`); otherwise the bucket is rebuilt. Returns the bucket record."""
     out_root = Path(out_root)
     done = out_root / "_done" / f"bucket-{bucket}.json"
+    sig = inputs_signature or stage_a_signature(std_root, mass_variants, cfg)
     if done.exists():
-        return json.loads(done.read_text(encoding="utf-8"))
+        rec = json.loads(done.read_text(encoding="utf-8"))
+        if rec.get("inputs_signature") == sig:
+            return rec
     ext = _read_bucket(std_root, bucket)
     if ext is None:
         ext = pd.DataFrame(columns=["source", "source_id", "connectivity_key", "representative_smiles", "molecular_formula",
@@ -283,7 +302,7 @@ def merge_bucket(bucket, std_root, mass_variants, out_root, train_structure_tabl
     variants.to_parquet(out_root / "variants" / f"bucket={bucket}.parquet", index=False)
     rec = {"bucket": bucket, "n_connectivities": int(len(u)), "n_variants": int(len(variants)),
            "n_train": int(u["train_present"].sum()) if len(u) else 0, "n_external_records": int(len(ext)),
-           "finished_at": datetime.now(timezone.utc).isoformat()}
+           "inputs_signature": sig, "finished_at": datetime.now(timezone.utc).isoformat()}
     _write_json_atomic(done, rec)
     return rec
 
@@ -303,23 +322,30 @@ def all_buckets(std_root, mass_variants, prefix_len):
 
 def finalize_universe(out_root, bucket_list, build_formula_index=True):
     """Global key-sorted `candidate_id` = bucket offset + row position (bucket files are key-sorted and
-    buckets are key-prefix ranges, so the concatenation is globally key-sorted). Writes
-    candidate_keys.npy, bucket_offsets.json, index/ (mass), formula_index/ and universe_manifest.json."""
-    import pyarrow.parquet as pq
+    buckets are key-prefix ranges, so the concatenation is globally key-sorted).
+
+    Canonical layout (everything under `out_root`, the universe root; downstream loaders rely on it):
+        candidate_keys.npy, bucket_offsets.json, universe_manifest.json, index/ (mass), formula_index/,
+        buckets/, variants/
+    The manifest embeds `source_summary` (TRAIN-only / external-only / shared counts), so the C2 protocol validity
+    (`casmi.validation.c2_protocol`) can be decided from the manifest alone."""
+    from collections import Counter
     from casmi.candidates.formula_index import CompactFormulaIndex
     from casmi.candidates.mass_index import CandidateMassIndex
     out_root = Path(out_root)
     offsets, keys, masses, ids, formulas, total, prev_last = {}, [], [], [], [], 0, ""
+    combo, per_source = Counter(), Counter()
     for b in sorted(bucket_list):
         p = out_root / "buckets" / f"bucket={b}.parquet"
-        t = pq.read_table(p, columns=["connectivity_key", "molecular_formula"]).to_pandas()
+        t = read_parquet_safe(p, columns=["connectivity_key", "molecular_formula", "candidate_sources"])
+        _count_sources(t["candidate_sources"], combo, per_source)
         k = t["connectivity_key"].astype(str).to_numpy()
         if len(k):
             assert (k[:-1] < k[1:]).all(), f"bucket {b} is not strictly key-sorted"
             assert k[0] > prev_last, f"bucket {b} overlaps the previous bucket (prefix ranges must be disjoint)"
             prev_last = k[-1]
         offsets[b] = total
-        v = pd.read_parquet(out_root / "variants" / f"bucket={b}.parquet", columns=["connectivity_key", "exact_mass"])
+        v = read_parquet_safe(out_root / "variants" / f"bucket={b}.parquet", columns=["connectivity_key", "exact_mass"])
         vk = v["connectivity_key"].astype(str).to_numpy()
         pos = np.searchsorted(k, vk)
         assert len(v) == 0 or ((pos < len(k)).all() and (k[np.clip(pos, 0, len(k) - 1)] == vk).all()), f"bucket {b}: variant without a structure row"
@@ -336,10 +362,11 @@ def finalize_universe(out_root, bucket_list, build_formula_index=True):
     fmeta = None
     if build_formula_index:
         fidx = CompactFormulaIndex.build(np.concatenate(formulas) if formulas else [], np.arange(total), total)
-        fmeta = fidx.save(out_root / "formula_index")
-    manifest = {"universe_schema_version": UNIVERSE_SCHEMA_VERSION, "n_candidates": total, "n_buckets": len(offsets),
-                "mass_index": mmeta, "formula_index": fmeta, "finalized_at": datetime.now(timezone.utc).isoformat()}
-    _write_json_atomic(out_root / "universe_manifest.json", manifest)
+        fmeta = {**fidx.save(out_root / "formula_index"), "path": "formula_index"}
+    manifest = {"universe_schema_version": UNIVERSE_SCHEMA_VERSION, "manifest_version": UNIVERSE_MANIFEST_VERSION,
+                "n_candidates": total, "n_buckets": len(offsets), "mass_index": mmeta, "formula_index": fmeta,
+                "source_summary": _summarize_sources(combo, per_source), "finalized_at": datetime.now(timezone.utc).isoformat()}
+    _write_json_atomic(out_root / "universe_manifest.json", manifest)           # readers look for it next to the index
     return manifest
 
 
@@ -368,9 +395,49 @@ def read_candidates(out_root, candidate_ids, columns=None):
     for bi in np.unique(which):
         b = bnames[bi]
         local = ids[which == bi] - starts[bi]
-        t = pd.read_parquet(out_root / "buckets" / f"bucket={b}.parquet", columns=columns)
+        t = read_parquet_safe(out_root / "buckets" / f"bucket={b}.parquet", columns=columns)
         parts.append(t.iloc[local].assign(candidate_id=local + starts[bi]))
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=(columns or V2_COLUMNS) + ["candidate_id"])
+
+
+def _source_set(s):
+    return set(s) if isinstance(s, (list, tuple, np.ndarray)) else set()
+
+
+def _count_sources(candidate_sources, combo, per_source):
+    for s in candidate_sources:
+        ss = _source_set(s)
+        combo["+".join(sorted(ss)) or "none"] += 1
+        per_source.update(ss)
+
+
+def _summarize_sources(combo, per_source):
+    n = sum(combo.values())
+    train_only = combo.get("TRAIN", 0)
+    no_source = combo.get("none", 0)
+    with_train = per_source.get("TRAIN", 0)
+    external_any = n - train_only - no_source
+    return {"n_candidates": int(n), "train_only": int(train_only), "external_only": int(external_any - (with_train - train_only)),
+            "train_and_external": int(with_train - train_only), "external_any": int(external_any), "no_source": int(no_source),
+            "per_source": {str(k): int(v) for k, v in sorted(per_source.items())},
+            "overlap": {str(k): int(v) for k, v in combo.most_common()}}
+
+
+def universe_source_summary(out_root):
+    """Source composition of a finalized universe, bucket by bucket (never the whole universe in RAM).
+
+    Returns a dict with `n_candidates`, `train_only`, `external_only`, `train_and_external`, `external_any`,
+    `no_source`, `per_source` (connectivities containing each source) and `overlap` (exact source combination ->
+    count). `external_any` (= external_only + train_and_external) is the number of structures a hidden Class-2
+    truth could come from. Universes finalized by this module also carry it in `universe_manifest.json`."""
+    from collections import Counter
+    out_root = Path(out_root)
+    off = json.loads((out_root / "bucket_offsets.json").read_text(encoding="utf-8"))["offsets"]
+    combo, per_source = Counter(), Counter()
+    for b in sorted(off, key=lambda x: off[x]):
+        t = read_parquet_safe(out_root / "buckets" / f"bucket={b}.parquet", columns=["candidate_sources"])
+        _count_sources(t["candidate_sources"], combo, per_source)
+    return _summarize_sources(combo, per_source)
 
 
 def build_universe_in_memory(mass_variants, external_standardized, train_structure_table=None, cfg=UniverseBuildConfig()):
@@ -401,5 +468,5 @@ def rejected_summary(out_dir):
     return pd.concat(parts).groupby(["kind", "source", "reason"], as_index=False)["n"].sum()
 
 
-__all__ = ["UniverseBuildConfig", "standardize_source", "merge_bucket", "all_buckets", "finalize_universe", "read_candidates",
-           "keys_to_ids", "load_candidate_keys", "build_universe_in_memory", "provenance_view", "rejected_summary", "REJECT_COLUMNS"]
+__all__ = ["UniverseBuildConfig", "standardize_source", "stage_a_signature", "merge_bucket", "all_buckets", "finalize_universe", "read_candidates",
+           "keys_to_ids", "load_candidate_keys", "build_universe_in_memory", "universe_source_summary", "provenance_view", "rejected_summary", "REJECT_COLUMNS"]

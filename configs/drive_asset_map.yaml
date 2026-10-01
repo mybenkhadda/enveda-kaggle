@@ -1,0 +1,144 @@
+# Local -> Google Drive asset map for the Colab research setup (COPY only, never move).
+#
+# Read by scripts/copy_colab_assets_to_drive.ps1 and scripts/create_colab_drive_architecture.ps1
+# (through scripts/lib/DriveAssetMap.ps1) and by src/casmi/workspace/colab_paths.py (tests check that
+# the Python tree matches `directories` below).
+#
+# FORMAT IS DELIBERATELY RESTRICTED (Windows PowerShell 5.1 has no YAML parser; a tiny one is used):
+#   * 2-space indentation, `key: value` scalars, inline lists `[a, b]`, comments with a leading '#'
+#   * no multi-line strings, no anchors, no nested lists
+#
+# `source` is relative to the local repository root; `destination` is relative to <DriveRoot>\<drive_root_name>.
+# Sources below are the ACTUAL local paths found on 2026-10-01 (see docs/COLAB_DRIVE_ASSET_AUDIT.md).
+#
+# category:  bundle | processed | metadata | raw | external
+#   bundle     skipped with -SkipBundle
+#   external   skipped with -SkipExternal; a missing source is reported as NOT PROVIDED YET, never an error
+#   raw        copied only with -IncludeRaw (the competition files are not needed by notebooks 10-14)
+
+drive_root_name: EnvedaCASMI
+
+directories: [data/raw/competition, data/raw/spectra, data/raw/metadata, data/processed, data/interim, data/external/coconut, data/external/pubchem, bundle, candidates/standardized, candidates/formula_index, candidates/manifests, validation/splits, validation/regimes, validation/metrics, features/direct, features/analog, features/formula, features/fingerprint, features/contrastive, features/fragmentation, embeddings/spectra, embeddings/molecules, checkpoints/fingerprint, checkpoints/contrastive, checkpoints/ranker, predictions/validation, predictions/leaderboard, reports/environment, reports/validation, reports/candidate_recall, reports/analog, reports/fingerprint, reports/contrastive, reports/ranking, reports/error_analysis, cache/analog_neighbors, cache/fingerprints, cache/fragments, cache/staging, runs/records, exports/kaggle, exports/models, exports/manifests]
+
+assets:
+  frozen_bundle:
+    source: bundle
+    destination: bundle
+    mode: directory
+    required: true
+    category: bundle
+    exclude_dirs: [__pycache__, .pytest_cache, .ipynb_checkpoints]
+    exclude_files: ["*.pyc"]
+    identity_check: true
+
+  train_spectrum_metadata:
+    source: data/processed/train_spectrum_metadata.parquet
+    destination: data/processed/train_spectrum_metadata.parquet
+    mode: file
+    required: true
+    category: processed
+
+  connectivity_folds:
+    source: data/processed/connectivity_folds.parquet
+    destination: data/processed/connectivity_folds.parquet
+    mode: file
+    required: true
+    category: processed
+
+  structure_table:
+    source: data/interim/structure_table.parquet
+    destination: data/processed/structure_table.parquet
+    mode: file
+    required: true
+    category: processed
+
+  dev_queries:
+    source: data/interim/candidate_generation/dev_queries.parquet
+    destination: data/processed/dev_queries.parquet
+    mode: file
+    required: true
+    category: processed
+
+  molecule_mass_variants:
+    source: data/interim/candidate_generation/molecule_mass_variants.parquet
+    destination: data/processed/molecule_mass_variants.parquet
+    mode: file
+    required: true
+    category: processed
+
+  # provenance sidecars (small JSON; optional)
+  train_spectrum_metadata_meta:
+    source: data/processed/train_spectrum_metadata.meta.json
+    destination: data/processed/train_spectrum_metadata.meta.json
+    mode: file
+    required: false
+    category: metadata
+
+  connectivity_folds_meta:
+    source: data/processed/connectivity_folds.meta.json
+    destination: data/processed/connectivity_folds.meta.json
+    mode: file
+    required: false
+    category: metadata
+
+  structure_table_meta:
+    source: data/interim/structure_table.meta.json
+    destination: data/processed/structure_table.meta.json
+    mode: file
+    required: false
+    category: metadata
+
+  dev_queries_meta:
+    source: data/interim/candidate_generation/dev_queries.meta.json
+    destination: data/processed/dev_queries.meta.json
+    mode: file
+    required: false
+    category: metadata
+
+  molecule_mass_variants_meta:
+    source: data/interim/candidate_generation/molecule_mass_variants.meta.json
+    destination: data/processed/molecule_mass_variants.meta.json
+    mode: file
+    required: false
+    category: metadata
+
+  # competition files: NOT used by notebooks 10-14 (and test.parquet is never a validation input)
+  competition_train:
+    source: data/train.parquet
+    destination: data/raw/competition/train.parquet
+    mode: file
+    required: false
+    category: raw
+
+  competition_test:
+    source: data/test.parquet
+    destination: data/raw/competition/test.parquet
+    mode: file
+    required: false
+    category: raw
+
+  competition_sample_submission:
+    source: data/sample_submission.csv
+    destination: data/raw/competition/sample_submission.csv
+    mode: file
+    required: false
+    category: raw
+
+  # external candidate databases: not present locally yet -> NOT PROVIDED YET (never fails the migration)
+  external_coconut:
+    source: data/external/coconut
+    destination: data/external/coconut
+    mode: directory
+    required: false
+    category: external
+    exclude_dirs: [.ipynb_checkpoints]
+    exclude_files: []
+
+  external_pubchem:
+    source: data/external/pubchem
+    destination: data/external/pubchem
+    mode: directory
+    required: false
+    category: external
+    exclude_dirs: [.ipynb_checkpoints]
+    exclude_files: []

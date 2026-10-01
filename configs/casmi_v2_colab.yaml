@@ -1,37 +1,44 @@
 # CASMI v2 (Class-1 + Class-2) -- Colab-first configuration.
 #
-# Loaded by `casmi.workspace.config.load_v2_config`. Every path below is RELATIVE to `drive_root`
-# unless it is absolute. `drive_root` itself is overridden by the ENVEDA_DRIVE_ROOT environment
-# variable, and `repo_root` by ENVEDA_REPO_ROOT. Nothing here points at a local Windows path.
+# Loaded by `casmi.workspace.config.load_v2_config`.
 #
-# Persistent results go to Drive (drive_root/...). `scratch_dir` (default /content/scratch) is for
-# disposable temporaries only -- never the only copy of a result.
+#   SOURCE       /content/Enveda               git clone of github.com/mybenkhadda/enveda-kaggle (never on Drive)
+#   PERSISTENCE  /content/drive/MyDrive/EnvedaCASMI   data + artifacts (tree: configs/drive_asset_map.yaml)
+#   SCRATCH      /content/enveda_work          disposable staging / temporaries -- never the only copy of a result
+#
+# `paths:` = the PHYSICAL roots of `V2Paths` (casmi-v2-paths-4). Semantic artifact locations are derived from
+# them in ONE place: src/casmi/workspace/artifact_registry.py. Every relative path is relative to `drive_root`.
+# Overrides: ENVEDA_DRIVE_ROOT, ENVEDA_REPO_ROOT, ENVEDA_SCRATCH_DIR. Nothing here points at a local Windows path.
 
-schema_version: casmi-v2-config-1
+schema_version: casmi-v2-config-3
 
 paths:
   drive_root: /content/drive/MyDrive/EnvedaCASMI
-  repo_root: /content/drive/MyDrive/EnvedaCASMI/repo
-  raw_data_dir: data/raw                  # train.parquet (competition file); test.parquet is NOT used for validation
-  processed_dir: data/processed           # train_spectrum_metadata.parquet, connectivity_folds.parquet, ... (uploaded from local data/processed)
-  interim_dir: data/interim               # molecule_mass_variants.parquet, dev_queries.parquet, structure_table.parquet (uploaded from local data/interim)
-  external_dir: data/external             # user-supplied COCONUT / PubChem files (never downloaded by code)
-  bundle_dir: bundle                      # the frozen v2-A7 bundle (reference library peaks + connectivities)
-  candidate_db_dir: candidates
+  repo_root: /content/Enveda
+  scratch_dir: /content/enveda_work      # disposable local SSD
+
+  raw_data_dir: data/raw                  # competition files (optional; test.parquet is NEVER a validation input)
+  processed_dir: data/processed           # the five canonical inputs (see `inputs:`)
+  interim_dir: data/interim               # legacy modules only; v2 notebooks never read it
+  external_dir: data/external             # coconut/ and pubchem/ -- user-supplied, never downloaded by code
+  bundle_dir: bundle                      # the COMPLETE frozen v2-A7 bundle (copied by scripts/copy_colab_assets_to_drive.ps1)
+  candidate_db_dir: candidates            # = universe root: candidate_keys.npy bucket_offsets.json universe_manifest.json
+                                          #   index/ formula_index/ buckets/ variants/ (+ stage A: standardized/ rejected/
+                                          #   filtered_out/ _done/; reports: manifests/)
   embeddings_dir: embeddings
   checkpoints_dir: checkpoints
   predictions_dir: predictions
   reports_dir: reports
   cache_dir: cache
-  experiments_dir: experiments
-  scratch_dir: /content/scratch
+  experiments_dir: runs                   # append-only experiment records (records/*.json) + derived views
 
+# the five canonical processed inputs (copied from Windows; see configs/drive_asset_map.yaml), relative to drive_root
 inputs:
   train_spectrum_metadata: data/processed/train_spectrum_metadata.parquet
   connectivity_folds: data/processed/connectivity_folds.parquet
-  dev_queries: data/interim/candidate_generation/dev_queries.parquet
-  molecule_mass_variants: data/interim/candidate_generation/molecule_mass_variants.parquet
-  structure_table: data/interim/structure_table.parquet
+  structure_table: data/processed/structure_table.parquet
+  dev_queries: data/processed/dev_queries.parquet
+  molecule_mass_variants: data/processed/molecule_mass_variants.parquet
 
 runtime:
   seed: 42
@@ -76,9 +83,9 @@ universe:
     mass_margin_da: 1.0
   sources:                                # template = column mapping (casmi.candidates.sources.SourceConfig, relative to repo_root)
     - template: configs/v6/coconut_source.json
-      file: data/external/coconut.csv     # relative to drive_root; a missing file is reported and skipped
+      file: data/external/coconut/coconut.csv   # relative to drive_root; a missing file is reported and skipped
     # - template: configs/v6/pubchem_source.json
-    #   file: data/external/pubchem_subset.csv
+    #   file: data/external/pubchem/pubchem_subset.csv
 
 # ---------------------------------------------------------------------------------------------
 # Phase 4 -- candidate recall
@@ -87,6 +94,23 @@ recall:
   ppm_grid: [2, 3, 5, 10, 20]
   k_values: [25, 100, 500]
   exact_pool_counts: true                 # unique connectivities per window (slower than variant-row counts)
+  gate_a:                                 # the Gate-A summary reported by notebook 13 (only when the C2 protocol is valid)
+    recall_all_ppm: [2, 5, 10]            # C2 Recall@All at these tolerances
+    recall_at_k_ppm: 5                    # C2 Recall@100 and Recall@25 at this tolerance
+    pool_quantiles_ppm: 5                 # candidate-count median / p90 / p99 at this tolerance
+    decision_ppm: 10                      # tolerance of the heuristic coverage / density decision
+
+# C2 protocol validity (casmi.validation.c2_protocol): a TRAIN-only universe is NEVER a valid C2 universe
+c2_protocol:
+  min_external_candidates: 1              # >= this many structures from a non-TRAIN source (COCONUT / PubChem / ...)
+  min_external_share: 0.0001              # and at least this share of the universe
+
+# out-of-fold mass-error calibration diagnostics (casmi.validation.mass_calibration; notebook 13)
+mass_calibration:
+  group_cols: [instrument_type, adduct]   # offsets are estimated per group, with fallback to coarser groups
+  min_group_size: 50                      # smaller groups fall back to the parent group (instrument_type), then global
+  n_bootstrap: 200                        # bootstrap resamples for the median-offset confidence interval
+  ppm_grid: [2, 3, 5, 10]                 # before / after recall + pool size at these tolerances
 
 # ---------------------------------------------------------------------------------------------
 # Phase 5 -- analog propagation baseline
