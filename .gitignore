@@ -1,13 +1,45 @@
-﻿__pycache__/
-*.pyc
-.ipynb_checkpoints/
+# local datasets (root only: an unanchored `data/` also matched the source package src/casmi/data/)
+/data/
+outputs/
 
+# Colab / Drive research artifacts -- they live on Google Drive (configs/drive_asset_map.yaml), never in Git.
+# Root-anchored on purpose: unanchored `candidates/` or `validation/` would hide src/casmi/candidates/, src/casmi/validation/.
+/candidates/
+/validation/
+/features/
+/embeddings/
+/checkpoints/
+/predictions/
+/reports/
+/cache/
+/runs/
+/exports/
+/enveda_work/
+/colab_drive_upload/
+*.f8
+# Kaggle offline payload (multi-GB ZIP built from bundle/); the notebook + README next to it stay trackable
+/kaggle_upload/*.zip
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.env
+
+# frozen runtime bundle + generated folders (the bundle goes to Google Drive, the Colab repo has its own git)
 bundle/
 bundle_archive/
-data/
-outputs/
 kaggle_dryrun/
+colab_repo/
 colab_runtime/
-
+kaggle_wheels/
+# Kaggle Model build output (multi-GB, hard links into bundle/; built by scripts/prepare_kaggle_model.ps1)
+kaggle_model_build/
 *.log
-.env
+
+# OAuth / Google credentials
+client_secret*.json
+*client_secret*.json
+credentials*.json
+token.json
+*_token.json
+.google/
+.enveda/
