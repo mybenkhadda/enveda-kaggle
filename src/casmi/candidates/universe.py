@@ -38,9 +38,18 @@ import pandas as pd
 
 from casmi.candidates.filters import UniverseFilterConfig, apply_filters, is_organic_formula, structure_flags
 from casmi.candidates.merge import unify
-from casmi.candidates.standardize import REJECT_COLUMNS, standardize_records
+from casmi.candidates.standardize import REJECT_COLUMNS
 
 UNIVERSE_SCHEMA_VERSION = "casmi-v2-universe-1"
+STAGE_B_VERSION = "casmi-stage-b-2"
+UNIVERSE_MANIFEST_VERSION = 2
+KNOWN_SOURCES = ("TRAIN", "COCONUT", "PUBCHEM", "LOTUS", "NPATLAS")
+
+
+class StageBIncompleteError(RuntimeError):
+    """Stage C was asked to finalize buckets that were not all merged for the current Stage-B identity."""
+
+
 KEY_LEN = 14
 V2_COLUMNS = ["connectivity_key", "representative_smiles", "exact_mass", "molecular_formula", "molecular_weight", "formal_charge",
               "num_fragments", "is_organic", "is_single_component", "train_present", "pubchem_present", "coconut_present",
@@ -52,8 +61,8 @@ V2_COLUMNS = ["connectivity_key", "representative_smiles", "exact_mass", "molecu
 @dataclass
 class UniverseBuildConfig:
     bucket_prefix_len: int = 1
-    chunk_records: int = 200_000
-    n_jobs: int = 1
+    chunk_records: int = 200_000           # read chunk == resumable checkpoint (part of the Stage-A build identity)
+    n_jobs: int | str = 1                  # int, or "auto" / -1 (casmi.workspace.parallel.resolve_n_jobs); never changes outputs
     max_source_ids_per_candidate: int = 20
     filters: UniverseFilterConfig = field(default_factory=UniverseFilterConfig)
     prefilter_mass_margin_da: float = 1.0
@@ -88,17 +97,24 @@ def _write_json_atomic(path, obj):
 # stage A: standardize one source (resumable)
 # ---------------------------------------------------------------------------------------------
 
-def formula_prefilter(records, cfg):
+def formula_prefilter(records, cfg, cache=None):
     """Cheap pre-RDKit filter from the SOURCE formula (no SMILES parsing): drop records whose source formula
     is parseable AND clearly outside the mass range (+/- margin) or not organic. Unparseable / missing
-    formulas pass through to the real standardizer + filters. Returns `(keep, dropped_with_reason)`."""
+    formulas pass through to the real standardizer + filters. Returns `(keep, dropped_with_reason)`.
+
+    `cache` (optional dict, one per source run with a FIXED cfg): formula string -> (mass, organic), so formulas that
+    recur across chunks are parsed once. The same functions compute the values, so decisions are identical."""
     from casmi.chemistry.adducts import _formula_mass
     if not cfg.prefilter_by_source_formula or "source_formula" not in records or records["source_formula"].isna().all():
         return records, records.iloc[0:0].assign(filter_reason=pd.Series(dtype=str))
     f = records["source_formula"].astype(object)
     uniq = pd.unique(f.dropna())
-    mass = {u: _formula_mass(str(u)) for u in uniq}
-    org = {u: is_organic_formula(str(u), cfg.filters.organic_elements) for u in uniq}
+    cache = {} if cache is None else cache
+    for u in uniq:
+        if u not in cache:
+            cache[u] = (_formula_mass(str(u)), is_organic_formula(str(u), cfg.filters.organic_elements))
+    mass = {u: cache[u][0] for u in uniq}
+    org = {u: cache[u][1] for u in uniq}
     m = f.map(mass).astype(float)
     lo, hi = cfg.filters.min_exact_mass - cfg.prefilter_mass_margin_da, cfg.filters.max_exact_mass + cfg.prefilter_mass_margin_da
     out_of_range = m.notna() & ((m < lo) | (m > hi))
@@ -115,10 +131,10 @@ _FLOAT_COLS = ("neutral_monoisotopic_mass", "molecular_weight", "formal_charge",
 _BOOL_COLS = ("tautomer_hit_cap", "is_charged", "is_organic", "is_single_component", "is_neutral", "in_mass_range")
 
 
-def _normalize_dtypes(df):
+def _normalize_dtypes(df, copy=True):
     """Identical Arrow schema in every shard (an all-None object column would otherwise become `null`
     type in one file and `string` in another, breaking the multi-file bucket read)."""
-    d = df.copy()
+    d = df.copy() if copy else df
     for c in d.columns:
         if c in _TEXT_COLS:
             d[c] = d[c].astype("string")
@@ -130,53 +146,35 @@ def _normalize_dtypes(df):
 
 
 def _write_bucketed(df, path, prefix_len):
-    """Parquet sorted by bucket, one row group per bucket (so a pyarrow filter on `bucket` reads only it)."""
+    """Parquet sorted by bucket, one row group per bucket (so a pyarrow filter on `bucket` reads only it).
+    The Arrow table is built ONCE and written as contiguous slices (one per bucket) -- same schema, same row
+    groups and same values as building one table per bucket from pandas."""
     import pyarrow as pa
     import pyarrow.parquet as pq
     df = df.assign(bucket=bucket_of(df["connectivity_key"], prefix_len).to_numpy()).sort_values(["bucket", "connectivity_key"], kind="mergesort")
-    df = _normalize_dtypes(df)
+    b = df["bucket"].astype(str).to_numpy()
+    df = _normalize_dtypes(df, copy=False)                        # `df` is already a fresh sorted copy
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".parquet.tmp")
     table = pa.Table.from_pandas(df, preserve_index=False)
+    starts = np.flatnonzero(np.r_[True, b[1:] != b[:-1]]) if len(b) else np.zeros(0, dtype=int)
+    ends = np.r_[starts[1:], len(b)] if len(b) else np.zeros(0, dtype=int)
     with pq.ParquetWriter(tmp, table.schema) as w:
-        for b in df["bucket"].unique():
-            w.write_table(pa.Table.from_pandas(df[df["bucket"] == b], schema=table.schema, preserve_index=False))
+        for s, e in zip(starts, ends, strict=True):
+            w.write_table(table.slice(int(s), int(e - s)))
     tmp.replace(path)
 
 
-def standardize_source(source_cfg, out_dir, cfg=UniverseBuildConfig(), show_progress=True, standardize_fn=standardize_records):
-    """Stage A for one `SourceConfig`. Returns the per-chunk manifest (DataFrame)."""
-    from casmi.candidates.sources import iter_source_records
-    out_dir = Path(out_dir)
-    src = source_cfg.canonical_source()
-    source_cfg.chunksize = cfg.chunk_records
-    rows = []
-    for i, chunk in enumerate(iter_source_records(source_cfg)):
-        done = out_dir / "_done" / f"{src}-chunk-{i:05d}.json"
-        if done.exists():
-            rec = json.loads(done.read_text(encoding="utf-8"))
-            if rec.get("n_input") == len(chunk):
-                rows.append(rec)
-                continue
-        keep, pre = formula_prefilter(chunk, cfg)
-        std, rej = standardize_fn(keep, n_jobs=cfg.n_jobs, show_progress=False)
-        kept, filt = apply_filters(std, cfg.filters)
-        _write_bucketed(kept, out_dir / "standardized" / src / f"chunk-{i:05d}.parquet", cfg.bucket_prefix_len)
-        rej.to_parquet(_mk(out_dir / "rejected" / src) / f"chunk-{i:05d}.parquet", index=False)
-        fo = pd.concat([pre[["source", "source_id", "raw_smiles", "filter_reason"]],
-                        filt[["source", "source_id", "raw_smiles", "connectivity_key", "filter_reason"]]], ignore_index=True)
-        fo.to_parquet(_mk(out_dir / "filtered_out" / src) / f"chunk-{i:05d}.parquet", index=False)
-        rec = {"source": src, "chunk": i, "n_input": int(len(chunk)), "n_prefiltered": int(len(pre)), "n_rejected": int(len(rej)),
-               "n_filtered": int(len(filt)), "n_kept": int(len(kept)), "n_unique_connectivities_in_chunk": int(kept["connectivity_key"].nunique()),
-               "finished_at": datetime.now(timezone.utc).isoformat()}
-        assert rec["n_prefiltered"] + rec["n_rejected"] + rec["n_filtered"] + rec["n_kept"] == rec["n_input"], "record accounting broken"
-        _write_json_atomic(done, rec)
-        rows.append(rec)
-        if show_progress:
-            print(f"[{src}] chunk {i}: in={rec['n_input']} kept={rec['n_kept']} rejected={rec['n_rejected']} "
-                  f"filtered={rec['n_filtered']} prefiltered={rec['n_prefiltered']}")
-    return pd.DataFrame(rows)
+def standardize_source(source_cfg, out_dir, cfg=UniverseBuildConfig(), show_progress=True):
+    """Backward-compatible Stage A entry point -> `casmi.candidates.stage_a.run_stage_a` with the LEGACY full
+    standardization profile, outputs written directly to `out_dir` (no scratch). Unlike the old implementation,
+    chunk markers carry the build identity, so a changed source / chunk size / config is never reused.
+    Returns the per-chunk summary (DataFrame)."""
+    from casmi.candidates.stage_a import StageAPerformance, run_stage_a
+    perf = StageAPerformance(standardization_profile="full", stage_input_to_scratch=False, local_temp_outputs=False, cache_enabled=False,
+                             progress_every_records=5000 if show_progress else 0, telemetry=False)
+    return run_stage_a(source_cfg, out_dir, None, cfg, perf, log=print if show_progress else None).summary
 
 
 def _mk(p):
@@ -188,13 +186,67 @@ def _mk(p):
 # stage B: per-bucket merge (resumable)
 # ---------------------------------------------------------------------------------------------
 
-def _read_bucket(std_root, bucket):
+def _table_to_pandas(table):
+    """pyarrow -> pandas, robust to the pandas-3 list-dtype metadata issue (retry without pandas metadata)."""
+    try:
+        return table.to_pandas()
+    except TypeError:
+        return table.to_pandas(ignore_metadata=True)
+
+
+def _std_files(std_root=None, std_files=None):
+    """The standardized Stage-A chunk files to read: an explicit list (current builds, preferred) or -- legacy --
+    every `<std_root>/*/chunk-*.parquet`."""
+    if std_files is not None:
+        return [Path(f) for f in std_files]
+    return sorted(Path(std_root).glob("*/chunk-*.parquet")) if std_root is not None and Path(std_root).is_dir() else []
+
+
+def _read_bucket(files, bucket):
     import pyarrow.dataset as ds
-    files = sorted(Path(std_root).glob("*/chunk-*.parquet"))
+    files = [Path(f) for f in files]
     if not files:
         return None
     t = ds.dataset([str(f) for f in files], format="parquet").to_table(filter=ds.field("bucket") == bucket)
-    return t.to_pandas()
+    return _table_to_pandas(t)
+
+
+def frame_identity(df, key_col="connectivity_key", value_col=None):
+    """Deterministic lightweight metadata of an in-memory table (no hashing of file contents)."""
+    if df is None:
+        return None
+    out = {"n_rows": int(len(df))}
+    if key_col in df.columns and len(df):
+        k = df[key_col].dropna().astype(str)
+        out.update(n_unique_keys=int(k.nunique()), min_key=str(k.min()) if len(k) else None, max_key=str(k.max()) if len(k) else None)
+    if value_col and value_col in df.columns and len(df):
+        out["value_sum"] = round(float(pd.to_numeric(df[value_col], errors="coerce").sum()), 6)
+    return out
+
+
+def stage_b_identity(stage_a_inputs, mass_variants, train_structure_table, cfg):
+    """Everything a merged bucket depends on. `stage_a_inputs`: `stage_a.resolve_stage_a_inputs(...)` output (per source:
+    build id, chunk files + sizes) or, for legacy callers, {'legacy_std_files': [(name, size), ...]}."""
+    srcs = {}
+    for name, s in sorted((stage_a_inputs.get("sources") or {}).items()):
+        srcs[name] = {k: s.get(k) for k in ("status", "build_id", "n_chunks", "n_kept")}
+        if s.get("std_files"):
+            srcs[name]["files"] = sorted((Path(p).name, int(sz)) for p, sz in s["std_files"].items())
+    return {"stage_b_version": STAGE_B_VERSION, "universe_schema_version": UNIVERSE_SCHEMA_VERSION, "sources": srcs,
+            "legacy_std_files": stage_a_inputs.get("legacy_std_files"),
+            "mass_variants": frame_identity(mass_variants, "connectivity_key", "exact_mass"),
+            "structure_table": frame_identity(train_structure_table, "connectivity_key", "molecular_weight"),
+            "config": {"bucket_prefix_len": cfg.bucket_prefix_len, "max_source_ids_per_candidate": cfg.max_source_ids_per_candidate,
+                       "filters": json.loads(json.dumps(cfg.filters.__dict__, default=list))}}
+
+
+def stage_b_id_of(identity):
+    import hashlib
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+def _bucket_marker(out_root, stage_b_id, bucket):
+    return Path(out_root) / "_done" / "stage_b" / stage_b_id / f"bucket-{bucket}.json"
 
 
 def _first_by_key(df, key="connectivity_key", order_cols=()):
@@ -257,13 +309,24 @@ def provenance_view(rows, hidden_reference_keys):
     return add_provenance_aliases(class2_candidate_view(rows, hidden_reference_keys))
 
 
-def merge_bucket(bucket, std_root, mass_variants, out_root, train_structure_table=None, cfg=UniverseBuildConfig()):
-    """Stage B for one bucket. Skips when its done-marker exists. Returns the bucket record."""
+def merge_bucket(bucket, std_root, mass_variants, out_root, train_structure_table=None, cfg=UniverseBuildConfig(), std_files=None,
+                 stage_b_id=None):
+    """Stage B for one bucket. Resumes (skips) ONLY when a marker exists for the same Stage-B identity and the bucket
+    files it recorded are intact; otherwise the bucket is rebuilt -- a TRAIN-only bucket can never survive into a
+    universe whose Stage-A inputs changed (e.g. COCONUT added). Inputs: `std_files` (explicit list of the current
+    standardized chunk files) or, legacy, every chunk under `std_root`. Returns the bucket record."""
+    from casmi.workspace.staging import files_intact
     out_root = Path(out_root)
-    done = out_root / "_done" / f"bucket-{bucket}.json"
+    files = _std_files(std_root, std_files)
+    if stage_b_id is None:                       # legacy callers: identity from the file listing they read
+        legacy = sorted((f.name if std_root is None else str(f.relative_to(std_root)).replace("\\", "/"), f.stat().st_size) for f in files)
+        stage_b_id = stage_b_id_of(stage_b_identity({"legacy_std_files": legacy}, mass_variants, train_structure_table, cfg))
+    done = _bucket_marker(out_root, stage_b_id, bucket)
     if done.exists():
-        return json.loads(done.read_text(encoding="utf-8"))
-    ext = _read_bucket(std_root, bucket)
+        rec = json.loads(done.read_text(encoding="utf-8"))
+        if rec.get("stage_b_id") == stage_b_id and files_intact({str(out_root / r): s for r, s in (rec.get("files") or {}).items()}):
+            return rec
+    ext = _read_bucket(files, bucket)
     if ext is None:
         ext = pd.DataFrame(columns=["source", "source_id", "connectivity_key", "representative_smiles", "molecular_formula",
                                     "neutral_monoisotopic_mass", "name", "molecular_weight", "formal_charge", "n_fragments"])
@@ -279,41 +342,84 @@ def merge_bucket(bucket, std_root, mass_variants, out_root, train_structure_tabl
     assert u["connectivity_key"].is_unique if len(u) else True, "bucket must hold one row per connectivity"
     _mk(out_root / "buckets")
     _mk(out_root / "variants")
-    u.to_parquet(out_root / "buckets" / f"bucket={bucket}.parquet", index=False)
-    variants.to_parquet(out_root / "variants" / f"bucket={bucket}.parquet", index=False)
-    rec = {"bucket": bucket, "n_connectivities": int(len(u)), "n_variants": int(len(variants)),
+    rel = {"buckets": f"buckets/bucket={bucket}.parquet", "variants": f"variants/bucket={bucket}.parquet"}
+    u.to_parquet(out_root / rel["buckets"], index=False)
+    variants.to_parquet(out_root / rel["variants"], index=False)
+    rec = {"bucket": bucket, "stage_b_id": stage_b_id, "n_connectivities": int(len(u)), "n_variants": int(len(variants)),
            "n_train": int(u["train_present"].sum()) if len(u) else 0, "n_external_records": int(len(ext)),
-           "finished_at": datetime.now(timezone.utc).isoformat()}
+           "files": {r: (out_root / r).stat().st_size for r in rel.values()}, "finished_at": datetime.now(timezone.utc).isoformat()}
     _write_json_atomic(done, rec)
     return rec
 
 
-def all_buckets(std_root, mass_variants, prefix_len):
+def all_buckets(std_root, mass_variants, prefix_len, std_files=None):
     """Every bucket seen in the TRAIN variants or any standardized shard (sorted)."""
     import pyarrow.parquet as pq
     b = set(bucket_of(mass_variants["connectivity_key"], prefix_len))
-    for f in sorted(Path(std_root).glob("*/chunk-*.parquet")):
+    for f in _std_files(std_root, std_files):
         b |= set(pq.read_table(f, columns=["bucket"]).column("bucket").unique().to_pylist())
     return sorted(b)
+
+
+def run_stage_b(stage_a_inputs, mass_variants, train_structure_table, out_root, cfg=UniverseBuildConfig(), progress=None, log=print):
+    """Stage B over the CURRENT Stage-A builds only (`stage_a.resolve_stage_a_inputs`). Every bucket is merged under the
+    Stage-B identity of these inputs; buckets merged for any other identity are rebuilt. Returns
+    {'stage_b_id', 'identity', 'buckets', 'records'}."""
+    identity = stage_b_identity(stage_a_inputs, mass_variants, train_structure_table, cfg)
+    sid = stage_b_id_of(identity)
+    files = list(stage_a_inputs.get("std_files") or [])
+    buckets = all_buckets(None, mass_variants, cfg.bucket_prefix_len, std_files=files)
+    _write_json_atomic(Path(out_root) / "_done" / "stage_b" / sid / "identity.json", {"stage_b_id": sid, "identity": identity})
+    if log:
+        log(f"[stage B] id {sid} | {len(files)} standardized chunk file(s) | sources "
+            f"{ {k: v.get('status') for k, v in (stage_a_inputs.get('sources') or {}).items()} } | {len(buckets)} buckets")
+    it = progress(buckets) if progress else buckets
+    recs = [merge_bucket(b, None, mass_variants, out_root, train_structure_table, cfg, std_files=files, stage_b_id=sid) for b in it]
+    return {"stage_b_id": sid, "identity": identity, "buckets": buckets, "records": pd.DataFrame(recs)}
 
 
 # ---------------------------------------------------------------------------------------------
 # stage C: finalize (global candidate ids + indexes)
 # ---------------------------------------------------------------------------------------------
 
-def finalize_universe(out_root, bucket_list, build_formula_index=True):
+def _source_counts(candidate_sources, in_train, per_source, counts):
+    for s, tr in zip(candidate_sources, in_train, strict=True):
+        ss = set(s) if isinstance(s, (list, tuple, np.ndarray)) else set()
+        per_source.update(ss)
+        ext = ss - {"TRAIN"}
+        is_train = bool(tr) or "TRAIN" in ss
+        counts["train"] += int(is_train)
+        counts["external_any"] += int(bool(ext))
+        counts["external_only"] += int(bool(ext) and not is_train)
+        counts["train_and_external"] += int(bool(ext) and is_train)
+
+
+def finalize_universe(out_root, bucket_list, build_formula_index=True, stage_b_id=None, build_info=None):
     """Global key-sorted `candidate_id` = bucket offset + row position (bucket files are key-sorted and
     buckets are key-prefix ranges, so the concatenation is globally key-sorted). Writes
-    candidate_keys.npy, bucket_offsets.json, index/ (mass), formula_index/ and universe_manifest.json."""
+    candidate_keys.npy, bucket_offsets.json, index/ (mass), formula_index/ and universe_manifest.json.
+
+    `stage_b_id` (from `run_stage_b`): every bucket must carry a marker for THIS Stage-B identity, otherwise
+    StageBIncompleteError (never finalize a mix of old and new buckets). The manifest records the build identity and the
+    source composition (TRAIN / COCONUT / PUBCHEM counts, `external_source_present`) so the C2 protocol can be checked
+    without scanning buckets. Always rebuilt from the buckets (Stage C is cheap)."""
     import pyarrow.parquet as pq
+    from collections import Counter
     from casmi.candidates.formula_index import CompactFormulaIndex
     from casmi.candidates.mass_index import CandidateMassIndex
     out_root = Path(out_root)
+    if stage_b_id is not None:
+        missing = [b for b in bucket_list if not _bucket_marker(out_root, stage_b_id, b).exists()]
+        if missing:
+            raise StageBIncompleteError(f"{len(missing)} bucket(s) not merged for Stage-B identity {stage_b_id}: {missing[:10]} -- run Stage B")
     offsets, keys, masses, ids, formulas, total, prev_last = {}, [], [], [], [], 0, ""
+    per_source, counts = Counter(), Counter()
     for b in sorted(bucket_list):
         p = out_root / "buckets" / f"bucket={b}.parquet"
-        t = pq.read_table(p, columns=["connectivity_key", "molecular_formula"]).to_pandas()
-        k = t["connectivity_key"].astype(str).to_numpy()
+        t = pq.read_table(p, columns=["connectivity_key", "molecular_formula", "candidate_sources", "in_train"])
+        k = np.array([str(x) for x in t.column("connectivity_key").to_pylist()], dtype=object)
+        _source_counts(t.column("candidate_sources").to_pylist(), t.column("in_train").to_pylist(), per_source, counts)
+        formula_values = np.array(t.column("molecular_formula").to_pylist(), dtype=object)
         if len(k):
             assert (k[:-1] < k[1:]).all(), f"bucket {b} is not strictly key-sorted"
             assert k[0] > prev_last, f"bucket {b} overlaps the previous bucket (prefix ranges must be disjoint)"
@@ -326,7 +432,7 @@ def finalize_universe(out_root, bucket_list, build_formula_index=True):
         keys.append(k.astype(f"S{KEY_LEN}"))
         masses.append(v["exact_mass"].to_numpy(np.float64))
         ids.append((pos + total).astype(np.int64))
-        formulas.append(t["molecular_formula"].to_numpy(object))
+        formulas.append(formula_values)
         total += len(k)
     all_keys = np.concatenate(keys) if keys else np.zeros(0, f"S{KEY_LEN}")
     np.save(out_root / "candidate_keys.npy", all_keys)
@@ -337,10 +443,30 @@ def finalize_universe(out_root, bucket_list, build_formula_index=True):
     if build_formula_index:
         fidx = CompactFormulaIndex.build(np.concatenate(formulas) if formulas else [], np.arange(total), total)
         fmeta = fidx.save(out_root / "formula_index")
-    manifest = {"universe_schema_version": UNIVERSE_SCHEMA_VERSION, "n_candidates": total, "n_buckets": len(offsets),
-                "mass_index": mmeta, "formula_index": fmeta, "finalized_at": datetime.now(timezone.utc).isoformat()}
+    sources = {s: {"present": per_source.get(s, 0) > 0, "n_candidates": int(per_source.get(s, 0))}
+               for s in sorted(set(KNOWN_SOURCES) | set(per_source))}
+    manifest = {"universe_schema_version": UNIVERSE_SCHEMA_VERSION, "manifest_version": UNIVERSE_MANIFEST_VERSION, "build_id": stage_b_id,
+                "build_info": build_info, "n_candidates": total, "n_buckets": len(offsets), "sources": sources,
+                "external_source_present": counts["external_any"] > 0, "n_train_candidates": int(counts["train"]),
+                "n_external_any": int(counts["external_any"]), "n_external_only": int(counts["external_only"]),
+                "n_train_and_external": int(counts["train_and_external"]), "mass_index": mmeta, "formula_index": fmeta,
+                "finalized_at": datetime.now(timezone.utc).isoformat()}
     _write_json_atomic(out_root / "universe_manifest.json", manifest)
     return manifest
+
+
+def universe_source_status(out_root):
+    """C2-relevant universe status from `universe_manifest.json` alone (no bucket scan):
+    'absent' | 'train_only' | 'external' | 'unknown' (manifest written before source counts existed -> re-run Stage C)."""
+    p = Path(out_root) / "universe_manifest.json"
+    if not p.is_file():
+        return {"status": "absent", "external_source_present": False}
+    m = json.loads(p.read_text(encoding="utf-8"))
+    if "external_source_present" not in m:
+        return {"status": "unknown", "external_source_present": None, "n_candidates": m.get("n_candidates"),
+                "reason": "manifest predates source counts -- re-run Stage C (finalize_universe)"}
+    return {"status": "external" if m["external_source_present"] else "train_only", "external_source_present": m["external_source_present"],
+            "n_candidates": m.get("n_candidates"), "sources": m.get("sources"), "build_id": m.get("build_id")}
 
 
 def load_candidate_keys(out_root, mmap=True):
@@ -388,11 +514,12 @@ def build_universe_in_memory(mass_variants, external_standardized, train_structu
 
 
 def rejected_summary(out_dir):
-    """Counts of rejected (parse) and filtered-out rows by source and reason (reads the small side tables)."""
-    out_dir = Path(out_dir)
+    """Counts of rejected (parse) and filtered-out rows by source and reason (reads the small side tables).
+    `out_dir`: one directory or a list of directories (e.g. the current Stage-A build namespaces)."""
+    dirs = [Path(d) for d in out_dir] if isinstance(out_dir, (list, tuple)) else [Path(out_dir)]
     parts = []
     for kind, col in (("rejected", "failure_reason"), ("filtered_out", "filter_reason")):
-        for f in sorted((out_dir / kind).glob("*/chunk-*.parquet")):
+        for f in sorted(p for d in dirs for p in (d / kind).glob("*/chunk-*.parquet")):
             t = pd.read_parquet(f, columns=["source", col])
             t[col] = t[col].astype(str).str.split(":").str[0]
             parts.append(t.groupby(["source", col]).size().rename("n").reset_index().rename(columns={col: "reason"}).assign(kind=kind))
@@ -401,5 +528,6 @@ def rejected_summary(out_dir):
     return pd.concat(parts).groupby(["kind", "source", "reason"], as_index=False)["n"].sum()
 
 
-__all__ = ["UniverseBuildConfig", "standardize_source", "merge_bucket", "all_buckets", "finalize_universe", "read_candidates",
-           "keys_to_ids", "load_candidate_keys", "build_universe_in_memory", "provenance_view", "rejected_summary", "REJECT_COLUMNS"]
+__all__ = ["UniverseBuildConfig", "standardize_source", "merge_bucket", "all_buckets", "run_stage_b", "stage_b_identity", "stage_b_id_of",
+           "finalize_universe", "universe_source_status", "StageBIncompleteError", "read_candidates", "keys_to_ids", "load_candidate_keys",
+           "build_universe_in_memory", "provenance_view", "rejected_summary", "REJECT_COLUMNS"]

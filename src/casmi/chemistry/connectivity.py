@@ -74,15 +74,19 @@ def get_tautomer_enumerator(max_tautomers=None, max_transforms=None):
     return _ENUMERATOR_CACHE[key]
 
 
-def competition_connectivity_key_detailed(smiles, enumerator=None, max_tautomers=None, max_transforms=None):
+def competition_connectivity_key_detailed(smiles, enumerator=None, max_tautomers=None, max_transforms=None, compute_hit_cap=True):
     """Full detail behind `competition_connectivity_key`: also reports whether the tautomer
     search likely hit its cap (`hit_cap=True` means the result is the best tautomer found
     within the cap, not a verified global optimum -- rare, but worth logging in bulk runs
     rather than silently trusting).
 
+    `compute_hit_cap=False` skips ONLY the diagnostic `Enumerate` call used to count tautomers
+    (`hit_cap` is then None). The key itself always comes from the same
+    `enumerator.Canonicalize(mol)` -> `MolToInchiKey` call; default True = the original behaviour.
+
     Returns dict: {conn_key, plain_inchikey14, hit_cap, parse_ok, error}.
     """
-    out = {"conn_key": None, "plain_inchikey14": None, "hit_cap": False, "parse_ok": False, "error": None}
+    out = {"conn_key": None, "plain_inchikey14": None, "hit_cap": False if compute_hit_cap else None, "parse_ok": False, "error": None}
     mol = _mol_from_smiles(smiles)
     if mol is None:
         out["error"] = "parse_failed"
@@ -92,12 +96,14 @@ def competition_connectivity_key_detailed(smiles, enumerator=None, max_tautomers
 
     enumerator = enumerator or get_tautomer_enumerator(max_tautomers, max_transforms)
     try:
-        n_tautomers = len(enumerator.Enumerate(mol))
-        hit_cap = n_tautomers >= enumerator.GetMaxTautomers()
+        hit_cap = None
+        if compute_hit_cap:
+            n_tautomers = len(enumerator.Enumerate(mol))
+            hit_cap = bool(n_tautomers >= enumerator.GetMaxTautomers())
         canon = enumerator.Canonicalize(mol)
         ik = Chem.MolToInchiKey(canon)
         out["conn_key"] = ik[:14] if ik else out["plain_inchikey14"]
-        out["hit_cap"] = bool(hit_cap)
+        out["hit_cap"] = hit_cap
     except Exception as exc:
         out["error"] = f"tautomer_canonicalize_failed: {exc}"
         out["conn_key"] = out["plain_inchikey14"]

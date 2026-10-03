@@ -60,9 +60,26 @@ validation:
 # ---------------------------------------------------------------------------------------------
 universe:
   bucket_prefix_len: 1                    # connectivity-key prefix buckets (1 -> 26 buckets, 2 -> 676)
-  chunk_records: 200000                   # standardization chunk size (resumable unit)
-  n_jobs: -1                              # RDKit workers (-1 = all CPUs)
+  chunk_records: 100000                   # CSV read chunk == resumable checkpoint (part of the Stage-A build identity; changing it
+                                          # starts a new build). 50k-100k gives frequent checkpoints on Colab -- not a speed claim.
+  n_jobs: auto                            # RDKit worker processes: auto = all logical CPUs (RAM-capped) | an integer override
   max_source_ids_per_candidate: 20        # provenance list cap (full count kept in n_source_records)
+  performance:                            # Stage A performance knobs (casmi.candidates.stage_a.StageAPerformance); see docs/STAGE_A_OPTIMIZATION.md
+    standardization_profile: universe_minimal   # universe_minimal | full. Same identity calls; minimal skips EDA descriptors.
+    compute_tautomer_hit_cap: true        # false skips only the diagnostic Enumerate() (connectivity key unchanged); opt in after the parity benchmark
+    standardize_batch_records: 2000       # unique SMILES per worker task (progress granularity / IPC); never changes outputs
+    stage_input_to_scratch: true          # copy the external source once to scratch_dir/external (size check, no hashing)
+    local_temp_outputs: true              # write chunk outputs to scratch, persist to Drive, THEN write the done-marker
+    start_method: spawn                   # worker start method (spawn is the portable default)
+    ram_per_worker_gb: 1.0                # n_jobs=auto caps workers at available RAM / this budget
+    canonicalization_cache:
+      enabled: true                       # SQLite cache (raw SMILES -> structure row) on scratch; optional, never needed for correctness
+      dir: cache/standardization          # relative to scratch_dir
+    progress:
+      enabled: true
+      every_records: 5000                 # structures between progress lines
+      every_seconds: 30
+    telemetry: true                       # RSS / RAM / scratch disk on every chunk line
   filters:
     apply_to_train: false                 # TRAIN structures keep the training contract (never filtered)
     min_exact_mass: 150.0

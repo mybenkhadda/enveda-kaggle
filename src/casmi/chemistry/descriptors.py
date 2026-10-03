@@ -18,6 +18,27 @@ DESCRIPTOR_FIELDS = [
 ]
 
 
+IDENTITY_DESCRIPTOR_FIELDS = ["exact_mass", "molecular_weight", "formal_charge"]
+
+
+def _identity_values(mol):
+    """The three descriptors the candidate universe consumes. Shared by `compute_molecular_descriptors`
+    and `compute_identity_descriptors`, so both return bit-identical values (same RDKit calls on the
+    same `MolFromSmiles(smiles)` object)."""
+    return {"exact_mass": rdMolDescriptors.CalcExactMolWt(mol), "molecular_weight": Descriptors.MolWt(mol),
+            "formal_charge": Chem.GetFormalCharge(mol)}
+
+
+def compute_identity_descriptors(smiles):
+    """`exact_mass`, `molecular_weight`, `formal_charge` only (all None on a parse failure, never raises).
+    Used by the candidate-universe `universe_minimal` standardization profile, which skips the scaffold /
+    TPSA / logP / ring / element-count descriptors the universe never reads."""
+    mol = Chem.MolFromSmiles(smiles) if isinstance(smiles, str) else None
+    if mol is None:
+        return {k: None for k in IDENTITY_DESCRIPTOR_FIELDS}
+    return _identity_values(mol)
+
+
 def compute_molecular_descriptors(smiles):
     """One dict of structural descriptors for a SMILES string, with every field `None` on a
     parse failure (never raises).
@@ -44,9 +65,10 @@ def compute_molecular_descriptors(smiles):
     except Exception:
         murcko_scaffold, scaffold_smiles = None, None
 
+    ident = _identity_values(mol)
     return {
-        "exact_mass": rdMolDescriptors.CalcExactMolWt(mol),
-        "molecular_weight": Descriptors.MolWt(mol),
+        "exact_mass": ident["exact_mass"],
+        "molecular_weight": ident["molecular_weight"],
         "num_atoms": Chem.AddHs(mol).GetNumAtoms(),
         "num_heavy_atoms": n_heavy,
         "num_c": elem_counts.get("C", 0),
@@ -59,7 +81,7 @@ def compute_molecular_descriptors(smiles):
         "num_rings": ri.NumRings(),
         "num_aromatic_rings": rdMolDescriptors.CalcNumAromaticRings(mol),
         "num_rotatable_bonds": rdMolDescriptors.CalcNumRotatableBonds(mol),
-        "formal_charge": Chem.GetFormalCharge(mol),
+        "formal_charge": ident["formal_charge"],
         "hbd": rdMolDescriptors.CalcNumHBD(mol),
         "hba": rdMolDescriptors.CalcNumHBA(mol),
         "tpsa": rdMolDescriptors.CalcTPSA(mol),

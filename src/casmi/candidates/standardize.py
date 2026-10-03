@@ -31,6 +31,18 @@ STANDARDIZED_COLUMNS = ["source", "source_id", "raw_smiles", "normalized_smiles"
                         "formal_charge", "n_fragments", "is_charged", "num_heavy_atoms", "num_rings", "num_aromatic_rings", "hbd", "hba",
                         "tpsa", "logp", "murcko_scaffold", "name", "source_formula", "source_metadata"]
 
+# Everything the candidate-universe build (filters, merge.unify, to_v2_schema) reads -- established by static tracing of
+# casmi.candidates.filters / merge / universe. The structural EDA descriptors are NOT needed there.
+UNIVERSE_STANDARDIZED_COLUMNS = ["source", "source_id", "raw_smiles", "normalized_smiles", "representative_smiles", "connectivity_key",
+                                 "plain_inchikey14", "tautomer_hit_cap", "molecular_formula", "neutral_monoisotopic_mass",
+                                 "molecular_weight", "formal_charge", "n_fragments", "is_charged", "name", "source_formula",
+                                 "source_metadata"]
+PROFILE_COLUMNS = {"full": STANDARDIZED_COLUMNS, "universe_minimal": UNIVERSE_STANDARDIZED_COLUMNS}
+
+# Bump whenever ANY chemistry in this module or casmi.chemistry.{connectivity,structures,descriptors} changes: it is part of
+# the Stage-A build identity, so standardized chunks computed by an older canonicalizer are never reused.
+STANDARDIZATION_CONTRACT_VERSION = "casmi-std-contract-1"
+
 
 def training_tautomer_caps():
     """The tautomer caps the TRAINING structure table used (`PreprocessingConfig` defaults)."""
@@ -50,10 +62,9 @@ def n_fragments(smiles):
     return len(str(smiles).split(".")) if isinstance(smiles, str) and smiles else 0
 
 
-def standardize_records(records, n_jobs=1, show_progress=False, structure_table_fn=build_structure_table):
-    """`records`: DataFrame with source, source_id, raw_smiles (+ optional name, source_formula,
-    source_metadata). Returns `(standardized, rejected)`; every input row lands in exactly one of them.
-    RDKit runs once per UNIQUE raw SMILES (the training function's own dedupe)."""
+def prepare_records(records):
+    """Shared first step of every standardization path: optional provenance columns, blank-SMILES rejection.
+    Returns `(rec, todo, rejected_parts)`; `todo` holds the records that go to the canonicalizer."""
     rec = records.copy()
     for c in ("name", "source_formula", "source_metadata"):
         if c not in rec.columns:
@@ -61,9 +72,14 @@ def standardize_records(records, n_jobs=1, show_progress=False, structure_table_
     rec["raw_smiles"] = rec["raw_smiles"].where(rec["raw_smiles"].notna(), None)
     blank = rec["raw_smiles"].isna() | (rec["raw_smiles"].astype(str).str.strip() == "")
     rejected = [rec.loc[blank, ["source", "source_id", "raw_smiles"]].assign(failure_reason="missing_smiles")]
-    todo = rec[~blank]
-    tmax, tran = training_tautomer_caps()
-    table = structure_table_fn(todo["raw_smiles"], n_jobs=n_jobs, max_tautomers=tmax, max_transforms=tran, show_progress=show_progress)
+    return rec, rec[~blank], rejected
+
+
+def assemble_standardized(rec, todo, table, rejected, columns=STANDARDIZED_COLUMNS):
+    """Shared last step of every standardization path: map the per-UNIQUE-SMILES structure `table` back to EVERY
+    source record (provenance is never deduplicated), classify rejects, derive representative / formula /
+    n_fragments / is_charged. If `table` already carries `molecular_formula` (computed in the workers with the same
+    `molecular_formula(canonical_smiles)` function) it is used, otherwise it is computed here exactly as before."""
     table = table.rename(columns={"smiles": "raw_smiles", "canonical_smiles": "normalized_smiles", "exact_mass": "neutral_monoisotopic_mass",
                                   "tautomer_hit_cap": "tautomer_hit_cap"})
     m = todo.merge(table, on="raw_smiles", how="left", validate="many_to_one")
@@ -71,21 +87,35 @@ def standardize_records(records, n_jobs=1, show_progress=False, structure_table_
              np.where(m["connectivity_key"].isna(), "no_connectivity_key: " + m["error"].fillna("").astype(str),
              np.where(pd.to_numeric(m["neutral_monoisotopic_mass"], errors="coerce").isna(), "no_mass", "")))
     bad = reason != ""
-    rejected.append(m.loc[bad, ["source", "source_id", "raw_smiles"]].assign(failure_reason=reason[bad]))
+    rejected = list(rejected) + [m.loc[bad, ["source", "source_id", "raw_smiles"]].assign(failure_reason=reason[bad])]
     ok = m[~bad].copy()
-    uniq = pd.Series(ok["normalized_smiles"].unique())
-    formula = dict(zip(uniq, uniq.map(molecular_formula)))
-    ok["molecular_formula"] = ok["normalized_smiles"].map(formula)
+    if "molecular_formula" not in ok.columns:
+        uniq = pd.Series(ok["normalized_smiles"].unique())
+        formula = dict(zip(uniq, uniq.map(molecular_formula)))
+        ok["molecular_formula"] = ok["normalized_smiles"].map(formula)
     ok["representative_smiles"] = ok["normalized_smiles"]
     ok["n_fragments"] = ok["normalized_smiles"].map(n_fragments)
     ok["is_charged"] = pd.to_numeric(ok["formal_charge"], errors="coerce").fillna(0) != 0
     ok["neutral_monoisotopic_mass"] = ok["neutral_monoisotopic_mass"].astype(float)
-    for c in STANDARDIZED_COLUMNS:
+    for c in columns:
         if c not in ok.columns:
             ok[c] = None
     rej = pd.concat(rejected, ignore_index=True)[REJECT_COLUMNS]
     assert len(ok) + len(rej) == len(rec), "every input record must be standardized or rejected"
-    return ok[STANDARDIZED_COLUMNS].reset_index(drop=True), rej.reset_index(drop=True)
+    return ok[list(columns)].reset_index(drop=True), rej.reset_index(drop=True)
+
+
+def standardize_records(records, n_jobs=1, show_progress=False, structure_table_fn=build_structure_table):
+    """`records`: DataFrame with source, source_id, raw_smiles (+ optional name, source_formula,
+    source_metadata). Returns `(standardized, rejected)`; every input row lands in exactly one of them.
+    RDKit runs once per UNIQUE raw SMILES (the training function's own dedupe).
+
+    This is the LEGACY / reference path (full descriptor profile). The optimized Stage-A path
+    (`casmi.candidates.stage_a.standardize_records_fast`) shares `prepare_records` + `assemble_standardized`."""
+    rec, todo, rejected = prepare_records(records)
+    tmax, tran = training_tautomer_caps()
+    table = structure_table_fn(todo["raw_smiles"], n_jobs=n_jobs, max_tautomers=tmax, max_transforms=tran, show_progress=show_progress)
+    return assemble_standardized(rec, todo, table, rejected, STANDARDIZED_COLUMNS)
 
 
 def standardize_in_chunks(chunks, out_dir, n_jobs=1, prefix="part", show_progress=True):

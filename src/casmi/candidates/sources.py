@@ -111,7 +111,15 @@ def _iter_tabular(cfg):
             yield _tabular_chunk(b.to_pandas(), cfg)
         return
     sep = cfg.delimiter or ("\t" if fmt == "tsv" else ",")
-    for df in pd.read_csv(path, sep=sep, chunksize=cfg.chunksize, dtype=str, keep_default_na=True, low_memory=False):
+    # Read ONLY the configured columns (COCONUT exports carry dozens of wide text columns the universe never uses).
+    # Parsing semantics are unchanged: every value is read as str, the same NA tokens apply, quoting / escaping is
+    # the default C-parser behaviour, and rows are never dropped (malformed lines still raise as before).
+    header = list(pd.read_csv(path, sep=sep, nrows=0, dtype=str).columns)
+    need = list(dict.fromkeys(c for c in [cfg.id_col, cfg.smiles_col, cfg.name_col, cfg.formula_col, *cfg.metadata_cols] if c))
+    missing = [c for c in need if c not in header]
+    if missing:
+        raise SourceConfigError(f"configured columns {missing} not in the file; available: {header}")
+    for df in pd.read_csv(path, sep=sep, chunksize=cfg.chunksize, dtype=str, keep_default_na=True, low_memory=False, usecols=need):
         yield _tabular_chunk(df, cfg)
 
 
@@ -179,3 +187,22 @@ def iter_source_records(cfg):
 
 def config_record(cfg):
     return {k: v for k, v in asdict(cfg).items()}
+
+
+def estimate_record_count(path, sample_bytes=4 << 20, header_lines=1):
+    """ROUGH row-count estimate for progress / ETA only (never used for correctness): newline density of the first
+    `sample_bytes` bytes x file size. Never scans the whole file. Returns None when it cannot estimate."""
+    p = Path(path)
+    try:
+        size = p.stat().st_size
+        opener = gzip.open if str(p).endswith(".gz") else open
+        with opener(p, "rb") as f:
+            block = f.read(sample_bytes)
+    except OSError:
+        return None
+    lines = block.count(b"\n")
+    if not block or lines <= header_lines:
+        return None
+    if str(p).endswith(".gz"):
+        return None                                        # compressed: size is not proportional to rows
+    return max(int(round((lines - header_lines) * size / len(block))) if len(block) < size else lines - header_lines, 0)

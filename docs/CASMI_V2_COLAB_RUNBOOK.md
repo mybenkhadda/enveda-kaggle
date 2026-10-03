@@ -36,7 +36,26 @@ Notebook 11 can run before 12, but its C2 regime is then PRELIMINARY: C2 eligibi
 which truths exist in an external source. Re-run 11 with `REBUILD = True` after 12. Notebooks 13
 and 14 warn when the regimes are preliminary.
 
+### Notebook 12 (candidate universe): optimized Stage A
+
+Stage A is CPU-bound, and RDKit canonicalization dominates. The GPU is **not** used for it (see
+`docs/STAGE_A_OPTIMIZATION.md`). Settings live in `universe.performance` in `configs/casmi_v2_colab.yaml`.
+Worker count is `universe.n_jobs` (`auto`, or an integer override).
+
+1. Optional: run the parity benchmark (`scripts/benchmark_stage_a.py`). Continue only if it reports *identical*.
+2. Run notebook 12 top to bottom. The plan table shows the source size, staging, workers, the GPU decision and the build id.
+3. After Stage C, `universe status` must be `external` and `sources.COCONUT.n_candidates` must be > 0.
+   `train_only` means the C2 external-universe protocol is not valid.
+4. Then re-run notebook 11 with `REBUILD = True`, then run notebook 13 (Gate A). Run notebook 14 only after a valid Gate A.
+
+On a high-CPU VM or workstation, use `python scripts/build_external_universe.py --stage all --n-jobs auto`. It calls the
+same functions and writes the same `candidates/` tree.
+
 ## 3. Restarts
+
+Stage-A chunk markers carry a build identity: source file name and size, column mapping, chunk size, canonicalizer
+contract (including the RDKit version), and filters. Stage-B bucket markers carry the Stage-A builds they merged.
+A changed source or config never reuses old chunks, and a TRAIN-only bucket is rebuilt once COCONUT is added.
 
 Every expensive step resumes from Drive: universe chunks and buckets (`_done/` markers), analog
 neighbours and feature shards (`part-*.done`), fingerprints (append-only shards) and the binned
