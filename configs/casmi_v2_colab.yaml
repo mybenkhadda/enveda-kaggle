@@ -4,8 +4,9 @@
 # unless it is absolute. `drive_root` itself is overridden by the ENVEDA_DRIVE_ROOT environment
 # variable, and `repo_root` by ENVEDA_REPO_ROOT. Nothing here points at a local Windows path.
 #
-# Persistent results go to Drive (drive_root/...). `scratch_dir` (default /content/scratch) is for
-# disposable temporaries only -- never the only copy of a result.
+# Persistent results go to Drive (drive_root/...). `scratch_dir` (ONE canonical Colab scratch root:
+# /content/enveda_work, overridable by ENVEDA_SCRATCH_ROOT) is for disposable temporaries only -- never the
+# only copy of a result.
 
 schema_version: casmi-v2-config-1
 
@@ -24,7 +25,7 @@ paths:
   reports_dir: reports
   cache_dir: cache
   experiments_dir: experiments
-  scratch_dir: /content/scratch
+  scratch_dir: /content/enveda_work      # canonical disposable scratch (ENVEDA_SCRATCH_ROOT overrides); not part of any build identity
 
 inputs:
   train_spectrum_metadata: data/processed/train_spectrum_metadata.parquet
@@ -91,6 +92,10 @@ universe:
   prefilter:                              # cheap pre-RDKit filter from the SOURCE formula column (formula_col in the source config)
     by_source_formula: true               # unparseable / missing formulas always pass to the real standardizer
     mass_margin_da: 1.0
+  cleanup_policy: current_policy          # current_policy (built the existing TRAIN u COCONUT universe) | rescue_policy
+                                          # (Uncharger + fragment parent + retain permanent charges; casmi.candidates.rescue).
+                                          # Change ONLY after notebook 13 decides REBUILD_COCONUT_WITH_RESCUE_POLICY: an active
+                                          # policy is part of the Stage-A / Stage-B identity -> new builds, old ones untouched.
   sources:                                # template = column mapping (casmi.candidates.sources.SourceConfig, relative to repo_root)
     - template: configs/v6/coconut_source.json
       file: data/external/coconut.csv     # relative to drive_root; a missing file is reported and skipped
@@ -104,6 +109,66 @@ recall:
   ppm_grid: [2, 3, 5, 10, 20]
   k_values: [25, 100, 500]
   exact_pool_counts: true                 # unique connectivities per window (slower than variant-row counts)
+
+# ---------------------------------------------------------------------------------------------
+# Gate A (redesigned) -- external candidate COVERAGE (notebook 13_candidate_coverage; no ranking)
+# ---------------------------------------------------------------------------------------------
+coverage:
+  report_dir: reports/candidate_coverage  # relative to drive_root
+  ppm_values: [2, 5, 10]
+  panels:                                 # extra validation populations; dev_grouped (all grouped-validation queries) is always present
+    host_like:                            # natural-product / host-like panel: hidden-test instrument subset of the dev queries
+      kind: derived                       # derived (filter dev_queries) | file (separate table: query_id, true_connectivity_key, neutral_mass)
+      column: instrument_type
+      values: [timsTOF]
+      path: null
+      description: timsTOF dev queries (hidden-test instrument); derived from dev_queries, NOT a separate population
+  pubchem_membership:
+    index_dir: candidates/pubchem_membership              # built by scripts/build_pubchem_membership_index.py (absent -> NOT_AVAILABLE)
+    file: data/external/pubchem/CID-InChI-Key.gz          # user-supplied; any name -- only used by the build script
+    template: configs/v6/pubchem_membership_source.json   # relative to repo_root
+  pubchem_tier1:                          # ARCHITECTURE ONLY (casmi.candidates.pubchem_tier1); nothing runs while enabled: false
+    enabled: false
+    table: candidates/pubchem_tier1/tier1.parquet         # projected pool sizes are computed only if this table exists
+    path: ""                              # local PubChem metadata file (user-supplied)
+    format: tsv
+    columns: {cid: null, exact_mass: null, molecular_formula: null, formal_charge: null, component_count: null,
+              literature_count: null, patent_count: null, np_flag: null}
+    min_exact_mass: null                  # null -> universe.filters range
+    max_exact_mass: null
+    organic_only: true
+    neutral_only: null                    # null -> rule disabled
+    max_component_count: null
+    min_literature_count: null            # null -> DISABLED (no threshold is invented)
+    min_patent_count: null                # null -> DISABLED
+    require_np_flag: false
+    evidence_mode: any
+  roundtrip:
+    n_jobs: auto
+    max_per_bucket: null                  # null = every candidate (~696k RDKit calls); an integer = deterministic per-bucket sample
+  rescue:
+    canonicalize_prefiltered: true        # key the prefilter-dropped records with the training canonicalizer to attribute them to truths
+    n_jobs: auto
+  official_metric:                        # competition-PROVIDED canonicalizer (none exists in the repository) -> NOT_AVAILABLE when null
+    module_path: null
+    canonicalizer_function: null
+    sample_size: 500
+  public_baseline:                        # local artifacts of the public ~0.335 notebook (none found) -> NOT_AVAILABLE when null
+    path: null                            # parquet / csv: query_id + connectivity_key (or smiles)
+    ppm: 5
+  inference_metadata_path: null           # optional inference-safe query table (precursor_mz, adduct; no labels) for a neutral-mass range report
+  decision:                               # declared BEFORE results; evaluated mechanically by notebook 13 -- do not tune after seeing results
+    natural_product_panel: host_like
+    rule_a_min_incremental_pp: 10.0       # Rule A (given): PubChem adds >= 10 percentage points over COCONUT on the NP panel
+    rule_b_ppm: 5
+    rule_b_pool: full_current_universe_pool_size
+    rule_b_statistic: median
+    rule_b_min_reachability: null         # no project threshold for "high" -> NOT_EVALUATED until set
+    rule_b_large_pool_threshold: null     # no project threshold for "very large" -> NOT_EVALUATED until set
+    rule_c_min_rescued_fraction: null     # no project threshold for "meaningful" -> NOT_EVALUATED until set
+    rule_d_min_coconut_reachability: null # no project threshold -> NOT_EVALUATED until set
+    rule_d_max_lost_fraction: null        # no project threshold for "immaterial" -> NOT_EVALUATED until set
+    priority: [A, C, B, D]                # coverage fixes (A, C) before pool density (B) before ranking (D)
 
 # ---------------------------------------------------------------------------------------------
 # Phase 5 -- analog propagation baseline

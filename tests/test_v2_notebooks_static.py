@@ -9,7 +9,7 @@ import pytest
 
 NB_DIR = Path(__file__).resolve().parents[1] / "notebooks"
 V2 = ["10_colab_v2_setup.ipynb", "11_colab_hidden_like_validation.ipynb", "12_colab_candidate_universe.ipynb",
-      "13_colab_candidate_recall.ipynb", "14_colab_analog_baseline.ipynb"]
+      "13_colab_candidate_recall.ipynb", "13_candidate_coverage.ipynb", "14_colab_analog_baseline.ipynb"]
 
 
 def _cells(name):

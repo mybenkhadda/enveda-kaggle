@@ -17,7 +17,7 @@ def test_env_var_overrides_drive_root(tmp_path):
     assert paths.drive_root == tmp_path / "drive"
     assert paths.reports_dir == tmp_path / "drive" / "reports"
     assert paths.candidate_db_dir == tmp_path / "drive" / "candidates"
-    assert str(paths.scratch_dir).replace("\\", "/") == "/content/scratch"     # POSIX-rooted scratch is never re-rooted
+    assert str(paths.scratch_dir).replace("\\", "/") == "/content/enveda_work"     # canonical scratch; POSIX-rooted, never re-rooted
 
 
 def test_default_drive_root_without_env():
@@ -37,6 +37,7 @@ def test_absolute_path_is_kept():
     p = resolve_paths(cfg, environ={})
     assert p.scratch_dir == Path("/content/scratch")
     assert p.reports_dir == Path("/d") / "x"
+    assert resolve_paths(cfg, environ={"ENVEDA_SCRATCH_ROOT": "/content/enveda_work"}).scratch_dir == Path("/content/enveda_work")
 
 
 def test_deep_merge_does_not_mutate():

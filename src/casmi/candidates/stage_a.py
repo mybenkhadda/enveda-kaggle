@@ -151,17 +151,23 @@ def canonicalizer_contract(profile, compute_hit_cap=True):
 def stage_a_identity(source_cfg, source_file, ucfg, perf):
     """Stage-A build identity for one source. `source_file` is the PERSISTENT (Drive) file: its name and size count,
     not the local staged path. No content hashing."""
+    from casmi.candidates.rescue import get_policy, is_default_policy, policy_identity
     p = Path(source_file)
-    return {"stage_a_schema": STAGE_A_SCHEMA_VERSION, "source": source_cfg.canonical_source(), "source_file_name": p.name,
-            "source_size_bytes": p.stat().st_size,
-            "source_columns": {"format": source_cfg.format, "id_col": source_cfg.id_col, "smiles_col": source_cfg.smiles_col,
-                               "name_col": source_cfg.name_col, "formula_col": source_cfg.formula_col,
-                               "metadata_cols": list(source_cfg.metadata_cols or []), "delimiter": source_cfg.delimiter,
-                               "smi_has_header": source_cfg.smi_has_header, "max_records": source_cfg.max_records},
-            "chunk_records": int(ucfg.chunk_records), "bucket_prefix_len": int(ucfg.bucket_prefix_len),
-            "canonicalizer": canonicalizer_contract(perf.standardization_profile, perf.compute_tautomer_hit_cap),
-            "filters": json.loads(json.dumps(asdict(ucfg.filters), default=list)),
-            "prefilter": {"by_source_formula": bool(ucfg.prefilter_by_source_formula), "mass_margin_da": float(ucfg.prefilter_mass_margin_da)}}
+    ident = {"stage_a_schema": STAGE_A_SCHEMA_VERSION, "source": source_cfg.canonical_source(), "source_file_name": p.name,
+             "source_size_bytes": p.stat().st_size,
+             "source_columns": {"format": source_cfg.format, "id_col": source_cfg.id_col, "smiles_col": source_cfg.smiles_col,
+                                "name_col": source_cfg.name_col, "formula_col": source_cfg.formula_col,
+                                "metadata_cols": list(source_cfg.metadata_cols or []), "delimiter": source_cfg.delimiter,
+                                "smi_has_header": source_cfg.smi_has_header, "max_records": source_cfg.max_records},
+             "chunk_records": int(ucfg.chunk_records), "bucket_prefix_len": int(ucfg.bucket_prefix_len),
+             "canonicalizer": canonicalizer_contract(perf.standardization_profile, perf.compute_tautomer_hit_cap),
+             "filters": json.loads(json.dumps(asdict(ucfg.filters), default=list)),
+             "prefilter": {"by_source_formula": bool(ucfg.prefilter_by_source_formula), "mass_margin_da": float(ucfg.prefilter_mass_margin_da)}}
+    policy = get_policy(getattr(ucfg, "cleanup_policy", "current_policy"))
+    if not is_default_policy(policy):
+        # added ONLY for an active cleanup policy: the existing current-policy builds keep their build id
+        ident["cleanup_policy"] = policy_identity(policy)
+    return ident
 
 
 def build_id_of(identity):
@@ -397,16 +403,18 @@ def identity_mismatches(left, right, columns=IDENTITY_COLUMNS, max_rows=20):
     return pd.DataFrame(rows, columns=["row", "column", "left", "right"])
 
 
-def standardize_records_fast(records, engine, progress=None):
+def standardize_records_fast(records, engine, progress=None, extra_columns=()):
     """Same contract as `standardize_records` (shared prepare / assemble), structure rows from `engine`. Returns
     `(standardized, rejected, stats)`; every source record lands in exactly one of the two tables, with its own
-    source / source_id / name / source_formula / source_metadata (provenance is never deduplicated)."""
+    source / source_id / name / source_formula / source_metadata (provenance is never deduplicated).
+    `extra_columns`: record columns carried through unchanged (e.g. the rescue-policy provenance columns)."""
     rec, todo, rejected = prepare_records(records)
     unique = pd.unique(pd.Series(todo["raw_smiles"], dtype="object").dropna())
     if progress is not None:
         progress.start_structures(len(unique))
     table = engine.structure_table(unique, progress)
-    std, rej = assemble_standardized(rec, todo, table, rejected, PROFILE_COLUMNS[engine.profile])
+    cols = list(PROFILE_COLUMNS[engine.profile]) + [c for c in extra_columns if c in rec.columns]
+    std, rej = assemble_standardized(rec, todo, table, rejected, cols)
     n_todo = int(len(todo))
     stats = {"n_input_records": int(len(records)), "n_blank_smiles": int(len(rec) - n_todo), "n_unique_raw_smiles": int(len(unique)),
              "n_duplicate_raw_smiles_saved": int(n_todo - len(unique)), "duplicate_fraction": float((n_todo - len(unique)) / n_todo) if n_todo else 0.0,
@@ -589,11 +597,20 @@ def _valid_marker(marker, ns, build_id, chunk, row_start, n_input):
 
 
 def _process_chunk(chunk, ucfg, engine, formula_cache, progress):
+    """prefilter -> (optional cleanup policy) -> canonicalizer -> filters. Under `current_policy` (default) this is
+    exactly the previous chain; an active policy (e.g. `rescue_policy`) cleans external structures first, keeps the
+    provenance columns and applies the policy's effective filters (`casmi.candidates.rescue`)."""
     from casmi.candidates.filters import apply_filters
+    from casmi.candidates.rescue import CLEANUP_COLUMNS, apply_cleanup_to_records, effective_filters, get_policy
     from casmi.candidates.universe import formula_prefilter
-    keep, pre = formula_prefilter(chunk, ucfg, cache=formula_cache)
-    std, rej, stats = standardize_records_fast(keep, engine, progress)
-    kept, filt = apply_filters(std, ucfg.filters)
+    policy = get_policy(getattr(ucfg, "cleanup_policy", "current_policy"))
+    keep, pre = formula_prefilter(chunk, ucfg, cache=formula_cache, rescue=policy.active)
+    extra = ()
+    if policy.active:
+        keep = apply_cleanup_to_records(keep, policy)
+        extra = tuple(CLEANUP_COLUMNS)
+    std, rej, stats = standardize_records_fast(keep, engine, progress, extra_columns=extra)
+    kept, filt = apply_filters(std, effective_filters(ucfg.filters, policy))
     fo = pd.concat([pre[["source", "source_id", "raw_smiles", "filter_reason"]],
                     filt[["source", "source_id", "raw_smiles", "connectivity_key", "filter_reason"]]], ignore_index=True)
     return kept, rej, fo, pre, filt, stats
@@ -677,6 +694,21 @@ def run_stage_a(source_cfg, work_root, scratch_root, ucfg, perf=None, source_ide
     return StageAResult(src, build_id, identity, str(ns), summary, manifest)
 
 
+def active_stage_a_builds(work_root):
+    """READ-ONLY view of the most recent complete Stage-A build per source (`stage_a/ACTIVE/<SRC>.json` pointers), for
+    audits that must not recompute an identity (notebook 13). Returns {SRC: {'build_id', 'namespace', 'manifest'}}; a
+    pointer whose manifest is missing / incomplete is reported with status 'stale_pointer'."""
+    out = {}
+    act = Path(work_root) / "stage_a" / "ACTIVE"
+    for f in sorted(act.glob("*.json")) if act.is_dir() else []:
+        ptr = _read_json(f) or {}
+        man = _read_json(ptr.get("manifest", "")) if ptr.get("manifest") else None
+        ok = bool(man and man.get("complete") and man.get("build_id") == ptr.get("build_id"))
+        out[f.stem] = {"status": "complete" if ok else "stale_pointer", "build_id": ptr.get("build_id"),
+                       "namespace": str(Path(ptr["manifest"]).parent) if ptr.get("manifest") else None, "manifest": man if ok else None}
+    return out
+
+
 def resolve_stage_a_inputs(work_root, specs, ucfg, perf=None, require_complete=True):
     """Stage-B inputs: for every configured source whose file EXISTS, the COMPLETE Stage-A build whose identity matches
     the CURRENT source file / config (recomputed here, never taken from a stale pointer). Returns
@@ -707,7 +739,7 @@ def resolve_stage_a_inputs(work_root, specs, ucfg, perf=None, require_complete=T
             continue
         std = sorted(p for p in files if "/standardized/" in p.replace("\\", "/"))
         out["sources"][s.source] = {"status": "complete", "build_id": bid, "n_chunks": man["n_chunks"], "n_kept": man["n_kept"],
-                                    "n_input": man["n_input"], "std_files": {p: files[p] for p in std}}
+                                    "n_input": man["n_input"], "std_files": {p: files[p] for p in std}, "identity": identity}
         out["std_files"] += std
         out["namespaces"].append(str(ns))
     return out

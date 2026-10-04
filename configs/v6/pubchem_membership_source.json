@@ -1,0 +1,16 @@
+{
+  "_comment": "TEMPLATE for the PubChem KEY-MEMBERSHIP estimate (casmi.candidates.pubchem_membership). Obtain the file MANUALLY -- nothing in this repository downloads anything, and URLs are refused. Put it under MyDrive/EnvedaCASMI/data/external/pubchem/ and set `coverage.pubchem_membership.file` in configs/casmi_v2_colab.yaml (the file name is NOT fixed by code). VERIFY the column layout against your file before building.",
+  "_layout_default": "PubChem's CID-InChI-Key export: tab-separated, gzip-compressed, NO header, three columns CID / InChI / InChIKey. For a CSV/TSV with a header set header=true and name the columns in cid_col / inchikey_col.",
+  "_caveat": "connectivity_key = first InChIKey block of PubChem's STORED structure. Reported as PUBCHEM_KEY_MEMBERSHIP_ESTIMATE: PubChem's tautomer/charge/salt representation may differ from the competition RDKit tautomer-canonical key.",
+  "path": "",
+  "format": "tsv",
+  "compression": "infer",
+  "header": false,
+  "column_names": ["cid", "inchi", "inchikey"],
+  "cid_col": "cid",
+  "inchikey_col": "inchikey",
+  "delimiter": null,
+  "chunksize": 2000000,
+  "shard_prefix_len": 1,
+  "notes": "user-supplied local PubChem CID -> InChIKey file"
+}

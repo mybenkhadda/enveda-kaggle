@@ -35,7 +35,10 @@ v2 (Colab, PubChem-scale; see docs/CASMI_V2_IMPLEMENTATION_MAP.md):
     casmi.candidates.universe      resumable bucketed universe build -> v2 schema, global candidate ids
     casmi.candidates.mass_index    + CandidateMassIndex (int ids, mmap, batch search, exclusion masks)
     casmi.candidates.formula_index compact persisted formula -> candidate ids
-    casmi.candidates.recall        Gate-A recall sweep (external_only vs universe reachability)
+    casmi.candidates.recall        LEGACY_DIAGNOSTIC_ONLY recall sweep (Gate A is now casmi.validation.external_coverage)
+    casmi.candidates.rescue        current_policy / rescue_policy external cleanup (Uncharger, fragment parent, provenance)
+    casmi.candidates.pubchem_membership  LOCAL CID->InChIKey key-membership index (PUBCHEM_KEY_MEMBERSHIP_ESTIMATE)
+    casmi.candidates.pubchem_tier1 PubChem Tier-1 architecture (metadata prefilter, projected raw pools, late canonicalization)
 
 CLOSED-WORLD CAVEAT: `MassIndex` is built from `molecule_metadata`, which covers every unique
 train connectivity_key regardless of CV fold. So a development query's true structure is

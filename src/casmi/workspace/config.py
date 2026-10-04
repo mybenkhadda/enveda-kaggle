@@ -3,8 +3,10 @@
 Path rules:
   * `drive_root` comes from ENVEDA_DRIVE_ROOT when set, else the YAML value;
   * `repo_root` comes from ENVEDA_REPO_ROOT when set, else the YAML value;
-  * every other path is relative to `drive_root` unless absolute;
-  * `scratch_dir` is disposable (e.g. /content/scratch) -- never the only copy of a result.
+  * `scratch_dir` comes from ENVEDA_SCRATCH_ROOT when set, else the YAML value. The ONE canonical Colab scratch root is
+    `/content/enveda_work` (CANONICAL_COLAB_SCRATCH_ROOT; notebook 10 exports it). Scratch is disposable -- never the
+    only copy of a result; persistent artifacts always live under `drive_root`;
+  * every other path is relative to `drive_root` unless absolute.
 """
 import copy
 import os
@@ -15,6 +17,8 @@ import yaml
 
 ENV_DRIVE_ROOT = "ENVEDA_DRIVE_ROOT"
 ENV_REPO_ROOT = "ENVEDA_REPO_ROOT"
+ENV_SCRATCH_ROOT = "ENVEDA_SCRATCH_ROOT"
+CANONICAL_COLAB_SCRATCH_ROOT = "/content/enveda_work"
 DEFAULT_CONFIG_RELPATH = Path("configs") / "casmi_v2_colab.yaml"
 PERSISTENT_DIRS = ("raw_data_dir", "processed_dir", "interim_dir", "external_dir", "candidate_db_dir", "embeddings_dir",
                    "checkpoints_dir", "predictions_dir", "reports_dir", "cache_dir", "experiments_dir")
@@ -60,7 +64,8 @@ def resolve_paths(cfg, environ=None):
     p = cfg["paths"]
     drive = Path(env.get(ENV_DRIVE_ROOT) or p["drive_root"])
     repo = Path(env.get(ENV_REPO_ROOT) or p.get("repo_root") or drive / "repo")
-    kw = {"drive_root": drive, "repo_root": repo}
+    scratch = Path(env.get(ENV_SCRATCH_ROOT) or p.get("scratch_dir") or CANONICAL_COLAB_SCRATCH_ROOT)
+    kw = {"drive_root": drive, "repo_root": repo, "scratch_dir": scratch}
     for f in fields(V2Paths):
         if f.name not in kw:
             kw[f.name] = _resolve(drive, p[f.name])
@@ -90,3 +95,9 @@ def deep_merge(base, extra):
 def input_path(cfg, paths, name):
     """Absolute path of a named input from `cfg['inputs']` (relative to drive_root)."""
     return _resolve(paths.drive_root, cfg["inputs"][name])
+
+
+def missing_required_inputs(cfg, paths, names=None):
+    """[(name, path)] of configured `inputs` that do not exist (notebook 10 preflight; directories are never created)."""
+    names = list(names) if names is not None else list((cfg.get("inputs") or {}))
+    return [(n, str(input_path(cfg, paths, n))) for n in names if not input_path(cfg, paths, n).exists()]

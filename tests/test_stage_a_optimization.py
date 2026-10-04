@@ -380,7 +380,8 @@ def test_stage_c_refuses_foreign_buckets_and_records_sources(tmp_path):
         finalize_universe(out, with_ext["buckets"] + ["Z"], stage_b_id=with_ext["stage_b_id"])
     man = finalize_universe(out, with_ext["buckets"], stage_b_id=with_ext["stage_b_id"], build_info={"stage_a": {"COCONUT": "x"}})
     assert man["external_source_present"] and man["sources"]["COCONUT"]["n_candidates"] == 1 and man["n_external_only"] == 1
-    assert man["build_id"] == with_ext["stage_b_id"] and universe_source_status(out)["status"] == "external"
+    assert man["parent_stage_b_build_id"] == with_ext["stage_b_id"] and man["build_id"] != with_ext["stage_b_id"]   # Stage-C id derives from it
+    assert universe_source_status(out)["status"] == "external"
     assert json.loads((out / "universe_manifest.json").read_text())["n_train_candidates"] == 1
 
 

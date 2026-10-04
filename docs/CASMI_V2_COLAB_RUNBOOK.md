@@ -4,7 +4,7 @@
 
 ```
 MyDrive/EnvedaCASMI/                    <- ENVEDA_DRIVE_ROOT (override with the env var)
-├── repo/                               <- this repository (upload, or set REPO_GIT_URL in notebook 10)
+├── notebooks/                          <- operational .ipynb copies opened in Colab (10, 11, 12, 13_candidate_coverage, 14)
 ├── bundle/                             <- the frozen v2-A7 bundle folder (reference library peaks + connectivities)
 ├── data/
 │   ├── raw/train.parquet               (optional for this pass; not read by notebooks 10–14)
@@ -13,9 +13,14 @@ MyDrive/EnvedaCASMI/                    <- ENVEDA_DRIVE_ROOT (override with the 
 │   ├── interim/structure_table.parquet
 │   ├── interim/candidate_generation/dev_queries.parquet
 │   ├── interim/candidate_generation/molecule_mass_variants.parquet
-│   └── external/coconut.csv            <- obtained MANUALLY (and optionally a curated PubChem subset)
+│   ├── external/coconut.csv            <- obtained MANUALLY
+│   └── external/pubchem/               <- optional, MANUAL: PubChem CID -> InChIKey file for the membership estimate
 └── (created by the notebooks) candidates/ cache/ reports/ predictions/ checkpoints/ experiments/ embeddings/
 ```
+
+The source code is NOT on Drive: notebook 10 clones GitHub `mybenkhadda/enveda-kaggle` (branch `ENVEDA_GIT_BRANCH`,
+default `feature/external-coverage-gate`) to `/content/Enveda`. The one canonical scratch root is `/content/enveda_work`
+(`ENVEDA_SCRATCH_ROOT` = `paths.scratch_dir`). It is disposable and never part of a build identity.
 
 Copy the `data/…` files from the local repository's `data/` folder; their `.meta.json` sidecars are optional.
 Check the column names in `configs/v6/coconut_source.json` (or `pubchem_source.json`) against the
@@ -29,8 +34,13 @@ header of your file, and list the file under `universe.sources` in `configs/casm
 | 11 | `11_colab_hidden_like_validation` | CPU | `data/processed/validation_regimes.parquet` (+ metadata), `reports/validation_summary.{parquet,json}` |
 | 12 | `12_colab_candidate_universe` | CPU, high RAM preferred | `candidates/universe/…` (buckets, index, formula index, manifest) |
 | 11 again | with `REBUILD = True` | CPU | final (non-PRELIMINARY) regimes with external-source C2 eligibility |
-| 13 | `13_colab_candidate_recall` | CPU | `reports/c2_candidate_recall.{parquet,json}` + breakdowns. **Gate A** |
-| 14 | `14_colab_analog_baseline` | GPU optional | `cache/analog_neighbors/`, `data/processed/analog_features/`, `checkpoints/analog_ranker/`, `reports/analog_baseline/`, `predictions/analog_baseline/` |
+| 13 | `13_candidate_coverage` | CPU | `reports/candidate_coverage/*`. **Gate A = external COVERAGE** (no ranking) and the decision |
+| (13 legacy) | `13_colab_candidate_recall` | CPU | `reports/c2_candidate_recall.*`. **LEGACY_DIAGNOSTIC_ONLY**, never a Gate-A decision |
+| 14 | `14_colab_analog_baseline` | GPU optional | only if notebook 13 decided `PROCEED_TO_ANALOG_BASELINE`; `cache/analog_neighbors/`, `data/processed/analog_features/`, `checkpoints/analog_ranker/`, `reports/analog_baseline/`, `predictions/analog_baseline/` |
+
+**With the current TRAIN ∪ COCONUT universe already built:** fresh Colab → 10 → `13_candidate_coverage` → follow its
+decision. Do NOT re-run 12 unless the decision is `REBUILD_COCONUT_WITH_RESCUE_POLICY`, or a new external universe
+(e.g. PubChem Tier 1) is built deliberately. See `docs/CANDIDATE_COVERAGE_GATE.md`.
 
 Notebook 11 can run before 12, but its C2 regime is then PRELIMINARY: C2 eligibility needs to know
 which truths exist in an external source. Re-run 11 with `REBUILD = True` after 12. Notebooks 13
@@ -54,15 +64,26 @@ same functions and writes the same `candidates/` tree.
 ## 3. Restarts
 
 Stage-A chunk markers carry a build identity: source file name and size, column mapping, chunk size, canonicalizer
-contract (including the RDKit version), and filters. Stage-B bucket markers carry the Stage-A builds they merged.
-A changed source or config never reuses old chunks, and a TRAIN-only bucket is rebuilt once COCONUT is added.
+contract (including the RDKit version), filters, and the cleanup policy when it is not `current_policy`.
+
+Stage-B bucket markers (`casmi-stage-b-3`) carry the full Stage-B identity: per-source build id, file name and size,
+columns, canonicalizer, filters, prefilter and cleanup policy, plus the TRAIN artifacts and merge config. A changed
+source or config never reuses old chunks or buckets, and a TRAIN-only bucket is rebuilt once COCONUT is added.
+
+The Stage-C manifest (v3) records `parent_stage_b_build_id`. A Stage C built for another Stage B is reported `stale`, and
+a pre-v3 manifest is reported `legacy_manifest_detected` (readable; rebuild only when identity-dependent reuse is needed).
+After this change the next notebook-12 run rebuilds Stage B and C once; the COCONUT Stage-A build is reused.
 
 Every expensive step resumes from Drive: universe chunks and buckets (`_done/` markers), analog
 neighbours and feature shards (`part-*.done`), fingerprints (append-only shards) and the binned
 library matrices (`cache/analog_library_*`). After a disconnect, re-run the notebook from the top.
 
-## 4. Gate A (before any deep learning)
+## 4. Gate A (before any ranking or deep learning)
 
-Read `reports/c2_candidate_recall.json → gate_a`. The decision is a heuristic with thresholds you set.
-If C2 `external_only` Recall@All at a sensible ppm is low, the bottleneck is **candidate coverage**:
-add or curate sources before building rankers.
+Read `reports/candidate_coverage/coverage_gate_summary.json`. Gate A measures **external coverage**: TRAIN provenance
+never counts as reachable. It also reports mass-window coverage, pool density, filter losses (current vs rescue policy)
+and the representative-SMILES round trip.
+
+The decision rules are declared in `coverage.decision` **before** running. Unset thresholds are reported NOT_EVALUATED,
+never guessed. The old `reports/c2_candidate_recall.json` is LEGACY_DIAGNOSTIC_ONLY. Details are in
+`docs/CANDIDATE_COVERAGE_GATE.md`.

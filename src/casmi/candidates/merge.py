@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from casmi.candidates.provenance import aggregate_provenance
+from casmi.utils.booleans import as_bool
 
 SOURCE_ORDER = {"TRAIN": 0, "COCONUT": 1, "LOTUS": 2, "NPATLAS": 3, "PUBCHEM": 4}
 MASS_PRECISION = 5
@@ -57,7 +58,7 @@ def unify(mass_variants, external_standardized):
     u["representative_smiles"] = np.where(u["in_train"], u["train_smiles"], u["open_representative_smiles"])
     u["formula"] = np.where(u["in_train"], u["train_formula"], u["open_formula"])
     u["exact_mass"] = np.where(u["in_train"], u["train_mass"], u["open_mass"]).astype(float)
-    u["has_reference_spectrum"] = u["has_reference_spectrum"].fillna(False).astype(bool)
+    u["has_reference_spectrum"] = as_bool(u["has_reference_spectrum"], missing=False)   # object after the left merge
     u["train_vs_open_mass_diff_da"] = (u["train_mass"] - u["open_mass"]).abs()
 
     ext_only = ext[~ext["connectivity_key"].isin(set(st["connectivity_key"]))]
