@@ -4,12 +4,15 @@
 
 ```
 MyDrive/EnvedaCASMI/                    <- ENVEDA_DRIVE_ROOT (override with the env var)
-├── notebooks/                          <- operational .ipynb copies opened in Colab (10, 11, 12, 13_candidate_coverage, 14)
+├── notebooks/                          <- operational .ipynb copies opened in Colab (10, 11a, 11b, 12, 13_candidate_coverage, 14)
 ├── bundle/                             <- the frozen v2-A7 bundle folder (reference library peaks + connectivities)
 ├── data/
 │   ├── raw/train.parquet               (optional for this pass; not read by notebooks 10–14)
 │   ├── processed/train_spectrum_metadata.parquet
 │   ├── processed/connectivity_folds.parquet
+│   ├── processed/dev_qcr/dev_qcr_pairs.parquet            <- protocol v2: mirror-aware C1 evidence (copy from local)
+│   ├── processed/host_holdout/host_qcr_pairs.parquet      <- protocol v2: mirror-aware evidence of HOST queries
+│   ├── processed/host_holdout/host_holdout_spectra.parquet <- protocol v2: HOST panel (enveda-np-examples)
 │   ├── interim/structure_table.parquet
 │   ├── interim/candidate_generation/dev_queries.parquet
 │   ├── interim/candidate_generation/molecule_mass_variants.parquet
@@ -19,7 +22,7 @@ MyDrive/EnvedaCASMI/                    <- ENVEDA_DRIVE_ROOT (override with the 
 ```
 
 The source code is NOT on Drive: notebook 10 clones GitHub `mybenkhadda/enveda-kaggle` (branch `ENVEDA_GIT_BRANCH`,
-default `feature/external-coverage-gate`) to `/content/Enveda`. The one canonical scratch root is `/content/enveda_work`
+default `feature/validation-protocol-v2`) to `/content/Enveda`. The one canonical scratch root is `/content/enveda_work`
 (`ENVEDA_SCRATCH_ROOT` = `paths.scratch_dir`). It is disposable and never part of a build identity.
 
 Copy the `data/…` files from the local repository's `data/` folder; their `.meta.json` sidecars are optional.
@@ -31,16 +34,31 @@ header of your file, and list the file under `universe.sources` in `configs/casm
 | # | Notebook | Runtime | Writes |
 |---|---|---|---|
 | 10 | `10_colab_v2_setup` | any | `reports/environment/*.json`, Drive folders |
-| 11 | `11_colab_hidden_like_validation` | CPU | `data/processed/validation_regimes.parquet` (+ metadata), `reports/validation_summary.{parquet,json}` |
+| 11 | `11_colab_hidden_like_validation` | CPU | LEGACY v1 (superseded by 11b for Gate A): `data/processed/validation_regimes.parquet` (+ metadata), `reports/validation_summary.{parquet,json}` |
+| 11a | `11a_colab_legacy_universe_adoption` | CPU | adoption sidecar next to the legacy universe manifest (verification only; nothing rebuilt) |
+| 11b | `11b_colab_validation_regimes_v2` | CPU | identity-bound v2 regimes, records, panel manifest, exclusion manifests |
 | 12 | `12_colab_candidate_universe` | CPU, high RAM preferred | `candidates/universe/…` (buckets, index, formula index, manifest) |
 | 11 again | with `REBUILD = True` | CPU | final (non-PRELIMINARY) regimes with external-source C2 eligibility |
 | 13 | `13_candidate_coverage` | CPU | `reports/candidate_coverage/*`. **Gate A = external COVERAGE** (no ranking) and the decision |
 | (13 legacy) | `13_colab_candidate_recall` | CPU | `reports/c2_candidate_recall.*`. **LEGACY_DIAGNOSTIC_ONLY**, never a Gate-A decision |
 | 14 | `14_colab_analog_baseline` | GPU optional | only if notebook 13 decided `PROCEED_TO_ANALOG_BASELINE`; `cache/analog_neighbors/`, `data/processed/analog_features/`, `checkpoints/analog_ranker/`, `reports/analog_baseline/`, `predictions/analog_baseline/` |
 
-**With the current TRAIN ∪ COCONUT universe already built:** fresh Colab → 10 → `13_candidate_coverage` → follow its
-decision. Do NOT re-run 12 unless the decision is `REBUILD_COCONUT_WITH_RESCUE_POLICY`, or a new external universe
-(e.g. PubChem Tier 1) is built deliberately. See `docs/CANDIDATE_COVERAGE_GATE.md`.
+**Validation protocol v2, with the current (legacy) TRAIN ∪ COCONUT universe already built:**
+
+| step | notebook / command | writes |
+|---|---|---|
+| 1 | `10_colab_v2_setup` (fresh Colab) | environment record |
+| 2 | `11a_colab_legacy_universe_adoption` (or `scripts/adopt_legacy_universe_manifest.py`) | `candidates/universe/universe_manifest_v3_adopted.json`, `reports/universe/legacy_adoption_report.json` |
+| 3 | `11b_colab_validation_regimes_v2` | `data/processed/validation_regimes_v2.{parquet,manifest.json}`, `validation_regime_records_v2.parquet`, `panels/`, `exclusion_manifests/`, `legacy/validation_regimes_pre_external_universe.*` |
+| 4 (optional) | upload `data/external/pubchem/CID-InChI-Key.gz`, run `python scripts/build_pubchem_membership_index.py`, add `PUBCHEM` to `validation_v2.external_sources`, **re-run 11b** | `candidates/pubchem_membership/` |
+| 5 | `13_candidate_coverage` | `reports/candidate_coverage/*` (stops with `REGIME_REBUILD_REQUIRED` if 11b is stale) |
+| 6 | read the decision | `BLOCKED_A8_THRESHOLDS` until the rule B/C/D thresholds are declared |
+| 7 | `14_colab_analog_baseline` | only if `permits_ranking` (protocol VALID, regimes current, round-trip deployment OK) |
+
+Before step 3, upload the protocol-v2 inputs listed in section 1 (mirror-aware evidence, HOST file) and, if wanted,
+declare `panels.NP_PANEL.threshold`. Do NOT re-run 12 unless the decision is `REBUILD_COCONUT_WITH_RESCUE_POLICY`, or a
+new external universe (e.g. PubChem Tier 1) is built deliberately. See `docs/CANDIDATE_COVERAGE_GATE.md`,
+`docs/VALIDATION_REGIME_V2.md`, `docs/LEGACY_UNIVERSE_ADOPTION.md` and `docs/NP_PANEL_PROTOCOL.md`.
 
 Notebook 11 can run before 12, but its C2 regime is then PRELIMINARY: C2 eligibility needs to know
 which truths exist in an external source. Re-run 11 with `REBUILD = True` after 12. Notebooks 13

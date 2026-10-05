@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 NB_DIR = Path(__file__).resolve().parents[1] / "notebooks"
-V2 = ["10_colab_v2_setup.ipynb", "11_colab_hidden_like_validation.ipynb", "12_colab_candidate_universe.ipynb",
+V2 = ["10_colab_v2_setup.ipynb", "11_colab_hidden_like_validation.ipynb", "11a_colab_legacy_universe_adoption.ipynb",
+      "11b_colab_validation_regimes_v2.ipynb", "12_colab_candidate_universe.ipynb",
       "13_colab_candidate_recall.ipynb", "13_candidate_coverage.ipynb", "14_colab_analog_baseline.ipynb"]
 
 

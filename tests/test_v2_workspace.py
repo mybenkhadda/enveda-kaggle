@@ -70,9 +70,10 @@ def test_batch_size_is_conservative_and_overridable():
 def test_experiment_log_never_invents_metrics(tmp_path):
     log_experiment(tmp_path, "e1", "desc", ["mass"], C2_MRR25=0.25)
     df = load_experiments(tmp_path)
-    assert list(df.columns) == EXPERIMENT_COLUMNS
+    assert list(df.columns)[:len(EXPERIMENT_COLUMNS)] == EXPERIMENT_COLUMNS      # v2 binding columns follow
     row = df.iloc[0]
     assert row["C2_MRR25"] == 0.25 and math.isnan(row["C1_MRR25"]) and math.isnan(row["Hit1"])
+    assert bool(row["legacy_unbound"])                                          # unbound logger -> never comparable
     log_experiment(tmp_path, "e1", "desc2", ["mass"], C2_MRR25=0.3)          # same id replaces
     assert len(load_experiments(tmp_path)) == 1
     with pytest.raises(KeyError):

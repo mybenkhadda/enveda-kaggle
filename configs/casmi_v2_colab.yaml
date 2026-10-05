@@ -44,9 +44,10 @@ runtime:
 # ---------------------------------------------------------------------------------------------
 # Phase 2 -- hidden-like validation regimes
 # ---------------------------------------------------------------------------------------------
-validation:
+validation:                               # v1 keys below (regime_fractions, c1_*) are used ONLY by the legacy notebook 11;
+                                          # Gate A uses validation_v2 (natural, eligibility-based counts; no fractions)
   split_seed: 20261001                    # persisted with the regime table; never re-randomized per run
-  regime_fractions: {C1: 0.34, C2: 0.33, C3: 0.33}   # of ELIGIBLE truth connectivities per fold
+  regime_fractions: {C1: 0.34, C2: 0.33, C3: 0.33}   # LEGACY v1 only (34/33/33 split is NOT used by validation_v2)
   hidden_scope: fold                      # fold: all hidden truths of a fold hidden at once (recommended)
   c1_reference_protocol: test_simulated_strict   # frozen protocol: self + T1 + T2 references excluded
   c1_min_truth_spectra: 2                 # truth needs >= 1 OTHER spectrum to be a Class-1 query
@@ -55,6 +56,44 @@ validation:
   composite_weights_PROVISIONAL: {C1: 0.15, C2: 0.60, C3: 0.25}
   mass_bins_da: [0, 200, 300, 400, 500, 600, 800, 1000, 1500, 5000]
   pool_size_bins: [0, 1, 10, 25, 100, 500, 2000, 10000, 1000000000]
+
+# ---------------------------------------------------------------------------------------------
+# Validation protocol v2 (notebooks 11a / 11b / 13 / 14) -- see docs/VALIDATION_REGIME_V2.md
+# ---------------------------------------------------------------------------------------------
+validation_v2:
+  regimes_path: data/processed/validation_regimes_v2.parquet          # query level (relative to drive_root)
+  records_path: data/processed/validation_regime_records_v2.parquet   # per (panel, connectivity) record
+  manifest_path: data/processed/validation_regimes_v2.manifest.json   # identity + regime_signature
+  panel_manifest_path: data/processed/panels/panel_manifest.json
+  legacy_archive_dir: data/processed/legacy                           # v1 table archived as validation_regimes_pre_external_universe.*
+  exclusion_dir: data/processed/exclusion_manifests
+  external_sources: [COCONUT]             # add PUBCHEM only after its membership index exists -> identity changes -> re-run 11b
+  strict_git_commit: false                # true: a different git commit alone forces a regime rebuild (it is always recorded)
+  legacy_adoption:                        # notebook 11a / scripts/adopt_legacy_universe_manifest.py; must match EXACTLY when set
+    expected_counts: {n_candidates: 696447, train: 274195, coconut: 446794, train_and_coconut: 24542}
+  mirror_aware_evidence:                  # C1 AUTHORITY: exact lazy-walk QCR truth flags (upload these files from local data/processed)
+    files: [data/processed/dev_qcr/dev_qcr_pairs.parquet, data/processed/host_holdout/host_qcr_pairs.parquet]
+    flag_column: has_ge1_mirror_aware
+  test_simulated_strict_evidence:         # SENSITIVITY only (never decides C1); empty -> NOT_AVAILABLE
+    files: []
+    flag_column: has_ge1_test_simulated_strict
+
+panels:                                   # casmi.validation.panels; ALL_DEV is always built
+  TIMSTOF_DEV:                            # INSTRUMENT diagnostic (formerly 'host_like'); never a decision panel
+    column: instrument_type
+    values: [timsTOF]
+  HOST:                                   # file-backed enveda-np-examples panel; missing -> HOST_PANEL_SOURCE_MISSING (never fabricated)
+    path: data/processed/host_holdout/host_holdout_spectra.parquet   # upload from local data/processed/host_holdout/
+    source_label: enveda-np-examples
+    expected_n_molecules: 250
+  NP_PANEL:                               # STRUCTURE-ONLY NP-likeness; never membership / reachability / outcome based
+    method: rdkit_contrib_np_score        # rdkit_contrib_np_score (Ertl, RDKit Contrib) | file (user score table)
+    threshold: null                       # USER decision, set BEFORE running 11b; null -> NP_PANEL NOT_AVAILABLE (NP_THRESHOLD_NOT_SET)
+    threshold_provenance: null            # who / which reference set the threshold (recorded in the panel manifest)
+    score_file: null                      # method 'file' only
+    score_column: np_score
+    score_cache: data/processed/panels/np_scores.parquet
+  decision_panel_order: [HOST, NP_PANEL]  # first AVAILABLE panel governs Gate A; TIMSTOF_DEV / ALL_DEV are refused
 
 # ---------------------------------------------------------------------------------------------
 # Phase 3 -- external structure universe
@@ -116,13 +155,8 @@ recall:
 coverage:
   report_dir: reports/candidate_coverage  # relative to drive_root
   ppm_values: [2, 5, 10]
-  panels:                                 # extra validation populations; dev_grouped (all grouped-validation queries) is always present
-    host_like:                            # natural-product / host-like panel: hidden-test instrument subset of the dev queries
-      kind: derived                       # derived (filter dev_queries) | file (separate table: query_id, true_connectivity_key, neutral_mass)
-      column: instrument_type
-      values: [timsTOF]
-      path: null
-      description: timsTOF dev queries (hidden-test instrument); derived from dev_queries, NOT a separate population
+  # panels: moved to the top-level `panels:` section (ALL_DEV / TIMSTOF_DEV / HOST / NP_PANEL). The former `host_like`
+  # panel was the timsTOF INSTRUMENT subset and is now TIMSTOF_DEV (deprecated alias), never the natural-product panel.
   pubchem_membership:
     index_dir: candidates/pubchem_membership              # built by scripts/build_pubchem_membership_index.py (absent -> NOT_AVAILABLE)
     file: data/external/pubchem/CID-InChI-Key.gz          # user-supplied; any name -- only used by the build script
@@ -153,13 +187,21 @@ coverage:
     module_path: null
     canonicalizer_function: null
     sample_size: 500
-  public_baseline:                        # local artifacts of the public ~0.335 notebook (none found) -> NOT_AVAILABLE when null
+  public_baseline:                        # casmi.validation.public_baseline (interface only; no artifact exists) -> NOT_AVAILABLE when null
     path: null                            # parquet / csv: query_id + connectivity_key (or smiles)
+    query_id_column: query_id
+    key_column: connectivity_key
+    smiles_column: smiles
+    rank_column: null
+    label: public notebook baseline
+    provenance: null                      # where the artifact came from (notebook name / version); recorded with every report
     ppm: 5
   inference_metadata_path: null           # optional inference-safe query table (precursor_mz, adduct; no labels) for a neutral-mass range report
   decision:                               # declared BEFORE results; evaluated mechanically by notebook 13 -- do not tune after seeing results
-    natural_product_panel: host_like
+    natural_product_panel: HOST           # overwritten at run time by the selected decision panel (panels.decision_panel_order)
     rule_a_min_incremental_pp: 10.0       # Rule A (given): PubChem adds >= 10 percentage points over COCONUT on the NP panel
+    # Rules B / C / D ("A8" thresholds): NO project value exists (repository searched; "A8" is the aggregator). While any is
+    # null the decision is BLOCKED_A8_THRESHOLDS: notebook 13 evaluates and shows every rule but refuses a final decision.
     rule_b_ppm: 5
     rule_b_pool: full_current_universe_pool_size
     rule_b_statistic: median

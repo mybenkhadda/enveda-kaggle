@@ -622,7 +622,7 @@ def public_baseline_coverage(public_pool=None, queries=None, window_table=None, 
 class DecisionPolicy:
     """Thresholds come from `coverage.decision` in the config. Only Rule A's 10 pp threshold is given by the project
     brief; every other threshold defaults to None = NOT EVALUATED (no 'meaningful' / 'large' / 'high' value is invented)."""
-    natural_product_panel: str | None = "host_like"
+    natural_product_panel: str | None = "HOST"           # set at run time to the selected decision panel (HOST, else NP_PANEL); never TIMSTOF_DEV
     rule_a_min_incremental_pp: float = 10.0
     rule_b_ppm: float = 5.0
     rule_b_pool: str = "full_current_universe_pool_size"

@@ -103,8 +103,8 @@ def test_population_panels_are_kept_separate_and_missing_file_panel_raises():
     dev = pd.DataFrame({"query_id": [1, 2, 3], "true_connectivity_key": [KA, KB, KB], "fold": [0, 1, 1], "neutral_mass": [300.0, 400.0, 400.0],
                         "instrument_type": ["timsTOF", "QTOF", "timsTOF"]})
     reg = pd.DataFrame({"query_id": ["1", "2", "3"], "regime": ["C1", "C2", "C2"]})
-    q = build_population_table(dev, reg, [PanelSpec("host_like", column="instrument_type", values=["timsTOF"])])
-    assert q.groupby("panel").size().to_dict() == {"dev_grouped": 3, "host_like": 2}
+    q = build_population_table(dev, reg, [PanelSpec("TIMSTOF_DEV", column="instrument_type", values=["timsTOF"])])
+    assert q.groupby("panel").size().to_dict() == {"dev_grouped": 3, "TIMSTOF_DEV": 2}
     assert set(q.columns) >= {"panel", "query_id", "connectivity_key", "regime"}
     mol = molecule_table(q)
     assert len(mol) == 4 and mol["truth_exact_mass"].isna().all()            # missing exact mass -> NaN, never a failure
@@ -384,10 +384,10 @@ def test_rule_a_and_priority():
 
 
 def test_decision_metrics_from_tables():
-    reach = pd.DataFrame({"panel": ["host_like"], "n_molecules": [10], "incremental_pubchem_over_coconut_pp": [np.nan],
+    reach = pd.DataFrame({"panel": ["HOST"], "n_molecules": [10], "incremental_pubchem_over_coconut_pp": [np.nan],
                           "union_external_reachability": [0.7], "coconut_reachability": [0.7]})
-    pool = pd.DataFrame({"panel": ["host_like"], "ppm": [5], "pool": ["full_current_universe_pool_size"], "median": [42.0]})
-    loss = pd.DataFrame({"panel": ["host_like"], "reachable_before_filters": [8], "lost_count": [2], "rescued_count": [1],
+    pool = pd.DataFrame({"panel": ["HOST"], "ppm": [5], "pool": ["full_current_universe_pool_size"], "median": [42.0]})
+    loss = pd.DataFrame({"panel": ["HOST"], "reachable_before_filters": [8], "lost_count": [2], "rescued_count": [1],
                          "newly_reachable_by_rescue": [1]})
     m = decision_metrics(reach, pool, loss, DecisionPolicy())
     assert m["np_panel_present"] and m["pubchem_incremental_pp"] is None and m["pool_statistic"] == 42.0
@@ -542,15 +542,17 @@ def test_notebook10_c6_verify_is_code():
                for c in _nb("10_colab_v2_setup.ipynb")["cells"])
 
 
-NB13_REQUIRED_CELLS = ["md-title", "md-leakage", "md-decision-rules", "c-boot", "c-decision-policy", "c-universe", "c-populations",
-                       "c-membership", "c-reachability", "c-pubchem", "c-mass-window", "c-pool-density", "c-filter-loss-load", "c-rescue",
-                       "c-mass-range", "c-adduct-charge", "c-roundtrip", "c-official-metric", "c-public-baseline", "c-estimate",
-                       "c-decision", "c-fig-reachability", "c-fig-pools", "c-fig-loss-roundtrip", "c-save", "md-final-summary"]
+NB13_REQUIRED_CELLS = ["md-title", "md-leakage", "md-decision-rules", "md-protocol-v2", "c-boot", "c-decision-policy", "c-universe",
+                       "c-populations", "c-regimes", "c-membership", "c-reachability", "c-pubchem", "c-mass-window", "c-pool-density",
+                       "c-filter-loss-load", "c-rescue", "c-mass-range", "c-adduct-charge", "c-roundtrip", "c-roundtrip-diagnose",
+                       "c-official-metric", "c-public-baseline", "c-estimate", "c-decision", "c-fig-reachability", "c-fig-pools",
+                       "c-fig-loss-roundtrip", "c-save", "md-final-summary"]
 NB13_ARTIFACTS = ["external_reachability_by_molecule.parquet", "external_reachability_summary.csv", "reachability_by_mass_bin.csv",
                   "mass_pool_density.parquet", "mass_pool_density_summary.csv", "filter_loss_by_molecule.parquet", "filter_loss_summary.csv",
                   "smiles_roundtrip_failures.parquet", "smiles_roundtrip_summary.json", "official_metric_parity.json",
                   "pubchem_membership_summary.json", "pubchem_incremental_coverage.csv", "decision_rules.json", "coverage_gate_summary.json",
-                  "public_baseline_coverage.json", "public_baseline_coverage_comparison.csv"]
+                  "public_baseline_coverage.json", "public_baseline_coverage_comparison.csv", "regime_counts_by_panel.csv",
+                  "smiles_roundtrip_diagnosis.parquet", "smiles_roundtrip_diagnosis.json", "panel_status.json"]
 
 
 def test_notebook13_static_structure():
@@ -590,6 +592,8 @@ def test_notebook13_names_are_defined_before_use():
                 local.update(a.arg for a in n.args.args)
             elif isinstance(n, ast.comprehension):
                 local.update(x.id for x in ast.walk(n.target) if isinstance(x, ast.Name))
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                local.add(n.name)
         loads = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
         missing = loads - defined - local
         assert not missing, f"{c['id']}: used before definition {sorted(missing)}"
@@ -602,6 +606,7 @@ def test_notebook14_requires_the_coverage_gate():
     assert ids.index("c-coverage-gate") == ids.index("c-boot") + 1
     src = _src(cells[ids.index("c-coverage-gate")])
     assert "require_coverage_gate" in src and "PROCEED_TO_ANALOG_BASELINE" in src and "ALLOW_ANALOG_WITHOUT_GATE = False" in src
+    assert "require_protocol_v2_ready" in src and "validation_v2" in src
 
 
 def test_legacy_recall_notebook_is_labelled():

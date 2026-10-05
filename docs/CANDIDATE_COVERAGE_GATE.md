@@ -1,8 +1,16 @@
 # External Candidate Coverage Gate (Gate A, redesigned)
 
-Notebook: `notebooks/13_candidate_coverage.ipynb`. Module: `casmi.validation.external_coverage`.
+Notebook: `notebooks/13_candidate_coverage.ipynb`. Modules: `casmi.validation.external_coverage`,
+`casmi.validation.protocol_v2`, `casmi.validation.regimes_v2`, `casmi.validation.panels`, `casmi.candidates.legacy_adoption`.
 Status: **authored, not executed.** Every number in this document comes from the user's brief or from static code
 reading. No coverage value has been computed.
+
+> **Validation protocol v2** (branch `feature/validation-protocol-v2`). Notebook 13 now requires the identity-bound
+> regime manifest of notebook 11b (else it stops with `REGIME_REBUILD_REQUIRED`), recognizes the adopted legacy universe
+> (notebook 11a), evaluates the rules on the HOST / NP_PANEL decision panel (never TIMSTOF_DEV, the former `host_like`),
+> refuses a final decision while the rule B/C/D thresholds are null (`BLOCKED_A8_THRESHOLDS`), audits legacy Stage-A
+> drops, and diagnoses every round-trip failure. See `docs/VALIDATION_REGIME_V2.md`, `docs/LEGACY_UNIVERSE_ADOPTION.md`
+> and `docs/NP_PANEL_PROTOCOL.md`.
 
 ## 1. Why the old Recall@All could be trivial
 
@@ -174,15 +182,26 @@ representative_smiles → competition_connectivity_key (training tautomer caps) 
 
 Determinism is tested by permuting the input rows.
 
+**Diagnosis of failures (v2, `casmi.validation.roundtrip_diagnostics`).** The earlier full run reported 696,425 OK and
+22 failures, all COCONUT-only. Notebook 13 cell `c-roundtrip-diagnose` re-canonicalizes the Stage-A source records of
+every failing key and assigns one outcome: `REPRESENTATIVE_SMILES_FIX_ONLY`, `SOURCE_CANONICALIZATION_FIX`,
+`MERGE_REPRESENTATIVE_SELECTION_FIX`, `EXPECTED_CANONICALIZER_VARIATION` or `UNRESOLVED`, with a `proposed_smiles`
+when one maps back to the stored key. Nothing is replaced and nothing is blacklisted.
+
+**Deployment gate** (`protocol_v2.roundtrip_deployment_check`): `ROUNDTRIP_DEPLOYMENT_OK` only when every emitted
+candidate round-trips (failure rate 0) or is in an explicit blacklist passed deliberately by the user. A sampled round
+trip (`coverage.roundtrip.max_per_bucket` set) can never certify deployment. A ranking decision needs this gate.
+
 ## 9. Official metric and public baseline
 
 - **Official metric.** No competition-provided metric or canonicalizer exists in the repository. `src/metrics.py` is a
   project MRR helper, and `official_metric.py` on the unmerged `fix/v2-colab-bootstrap-artifacts` branch is a local
   reproduction built on the project canonicalizer. Notebook 13 therefore writes
   `OFFICIAL_METRIC_PARITY = NOT_AVAILABLE` unless `coverage.official_metric.module_path` points to a user-supplied file.
-- **Public baseline.** No local artifacts of the public ~0.335 notebook were found in the repository or on Drive. The
-  output is `PUBLIC_BASELINE_COVERAGE = NOT_AVAILABLE` until `coverage.public_baseline.path` is set (query_id +
-  connectivity_key or SMILES). The adapter then separates a coverage gap from a ranking gap.
+- **Public baseline.** No local artifact of the public notebook exists in the repository or on Drive. The interface is
+  `casmi.validation.public_baseline.PublicBaselineSpec` (`coverage.public_baseline`: path, query_id / key / SMILES /
+  rank columns, label, provenance, ppm). Without a file the output is `PUBLIC_BASELINE_COVERAGE = NOT_AVAILABLE`; a
+  public leaderboard score is never typed into code or config.
 
 ## 10. Stage-B / Stage-C invalidation (fixed before any new source)
 
@@ -214,34 +233,52 @@ A marker is reused only when the id, bucket and intact files all match. Older ma
 `finalize_universe` refuses any bucket whose marker belongs to another Stage-B id. `universe_manifest_status` reports
 `stale` and `legacy_manifest_detected`.
 
-**Legacy.** The existing 696,447-candidate universe has a v2 manifest. It stays readable: notebook 13 only reads keys,
-buckets and indexes, and reports `legacy_manifest_detected = true`. The next notebook-12 Stage B/C run rebuilds the
-buckets under the v3 identity; the Stage-A COCONUT build is reused. Nothing is deleted.
+**Legacy.** The existing 696,447-candidate universe has a pre-v3 manifest without source counts, so
+`universe_source_status` says `unknown` and the v1 protocol check reported "COCONUT has no candidates". Protocol v2
+fixes this without a rebuild: notebook 11a (`casmi.candidates.legacy_adoption`) verifies the persisted artifacts and
+writes the sidecar `universe_manifest_v3_adopted.json`; `effective_universe_identity` then reports `legacy_adopted`
+with an adopted (content-digest) build id. See `docs/LEGACY_UNIVERSE_ADOPTION.md`. Nothing is rebuilt or deleted.
+
+**Legacy Stage A.** The legacy run wrote `universe_work/_done/COCONUT-chunk-NNNNN.json` markers, which
+`active_stage_a_builds` (ACTIVE pointers only) did not see; hence `ACTIVE={}` and 0 lost records. Notebook 13 now uses
+`discover_stage_a_builds` + `select_stage_a_namespaces`: a legacy / adopted universe audits the legacy Stage-A drops.
 
 ## 11. Decision rules (pre-registered in `coverage.decision`)
 
-| rule | condition (NP panel = `natural_product_panel`, default `host_like` = timsTOF dev queries) | decision |
+The rules are evaluated on the **decision panel**: HOST (enveda-np-examples file) when available, else NP_PANEL
+(structure-only NP-likeness with a user threshold). TIMSTOF_DEV (the former `host_like`, a timsTOF instrument subset)
+never governs a decision.
+
+| rule | condition (decision panel) | decision |
 |---|---|---|
 | A | PubChem adds ≥ 10 pp external reachability over COCONUT | `BUILD_PUBCHEM_TIER1_NEXT` |
 | B | reachability ≥ `rule_b_min_reachability` AND pool statistic at ±5 ppm ≥ `rule_b_large_pool_threshold` | `BUILD_FORMULA_PRUNING_BEFORE_RANKING` |
 | C | rescue recovers ≥ `rule_c_min_rescued_fraction` of the truths reachable before filters (requires the Stage-B/C fix, present) | `REBUILD_COCONUT_WITH_RESCUE_POLICY` |
 | D | COCONUT reachability ≥ `rule_d_min_coconut_reachability` AND lost fraction ≤ `rule_d_max_lost_fraction` | `PROCEED_TO_ANALOG_BASELINE` |
 
-- Only the 10 pp threshold is given by the project. The other thresholds are `null`, so the rule is NOT_EVALUATED; no
-  value for "large", "meaningful", "high" or "immaterial" was invented. **Set them before running, never after looking
-  at results.**
-- Priority is A, C, B, D. The first fired rule is the decision.
-- Other outcomes: `PROTOCOL_INVALID` (no external source, or no population),
-  `UNDETERMINED_THRESHOLDS_OR_INPUTS_MISSING`, or `NO_RULE_FIRED`.
-- Notebook 14 runs only when `coverage_gate_summary.json` says completed, protocol valid and `PROCEED_TO_ANALOG_BASELINE`.
-  `require_coverage_gate` enforces this, with an explicit override flag that is logged.
+- Only the 10 pp threshold is given by the project. The repository was searched for "Prompt A" / A8 threshold values:
+  "A8" is the molecule aggregator (`casmi_infer.aggregation`), and no value for "large", "meaningful", "high" or
+  "immaterial" exists. The B / C / D thresholds stay `null`: each rule is NOT_EVALUATED and the decision is
+  **`BLOCKED_A8_THRESHOLDS`** (notebook 13 shows every rule but refuses a final decision). **Set them before running,
+  never after looking at results.** The policy identity (`policy_identity_v2`) covers the thresholds, the A8 status and
+  the decision-panel order.
+- Priority is A, C, B, D. The first fired rule is the mechanical decision.
+- Other outcomes: `PROTOCOL_INVALID` (protocol cases A / D), `DECISION_PANEL_UNAVAILABLE`, `REGIME_REBUILD_REQUIRED`
+  (stopped before any coverage number), `UNDETERMINED_THRESHOLDS_OR_INPUTS_MISSING`, or `NO_RULE_FIRED`.
+- Protocol validity v2: case A no external source → INVALID; case B legacy verified but not adopted →
+  VALID_FOR_READ_ONLY_COVERAGE; case C modern or adopted → VALID; case D contradiction → INVALID.
+- Notebook 14 runs only when the gate completed, the protocol is VALID, the regimes are current and bound to the same
+  universe, the decision permits ranking, the round-trip deployment check is OK and a decision panel exists
+  (`require_coverage_gate` + `require_protocol_v2_ready`, explicit logged override only).
 
 ## 12. Runtime order (user)
 
-1. Fresh Colab. Run `10_colab_v2_setup.ipynb`: it clones branch `feature/external-coverage-gate` into `/content/Enveda`,
+1. Fresh Colab. Run `10_colab_v2_setup.ipynb`: it clones branch `feature/validation-protocol-v2` into `/content/Enveda`,
    with scratch at `/content/enveda_work`.
-2. Run `13_candidate_coverage.ipynb` top to bottom. Do **not** re-run notebook 12 automatically.
-3. Follow the decision:
+2. Run `11a_colab_legacy_universe_adoption.ipynb` (legacy universe only), then `11b_colab_validation_regimes_v2.ipynb`.
+3. Optional: build the PubChem membership index, add `PUBCHEM` to `validation_v2.external_sources`, re-run 11b.
+4. Run `13_candidate_coverage.ipynb` top to bottom. Do **not** re-run notebook 12 automatically.
+5. Follow the decision:
    - `BUILD_PUBCHEM_TIER1_NEXT`: build the PubChem Tier-1 table.
    - `REBUILD_COCONUT_WITH_RESCUE_POLICY`: set `universe.cleanup_policy: rescue_policy`, re-run 12, then 13.
    - `BUILD_FORMULA_PRUNING_BEFORE_RANKING`: pruning work before any ranker.
@@ -259,7 +296,9 @@ Runtime artifacts (future; written by notebook 13) go to `MyDrive/EnvedaCASMI/re
   - `reachability_by_mass_bin.csv`
 - pool density: `mass_pool_density.parquet`, `mass_pool_density_summary.csv`, `mass_window_outcomes.csv`
 - filter loss: `filter_loss_by_molecule.parquet`, `filter_loss_summary.csv`, `rescue_attempts.parquet`
-- round trip: `smiles_roundtrip_failures.parquet`, `smiles_roundtrip_summary.json`, `roundtrip_parts/`
+- round trip: `smiles_roundtrip_failures.parquet`, `smiles_roundtrip_summary.json`, `roundtrip_parts/`,
+  `smiles_roundtrip_diagnosis.parquet`, `smiles_roundtrip_diagnosis.json` (with the deployment check)
+- regimes / panels: `regime_counts_by_panel.csv`, `panel_status.json`
 - PubChem: `pubchem_membership_summary.json`, `pubchem_incremental_coverage.csv`
 - official metric and public baseline:
   - `official_metric_parity.json`
@@ -269,6 +308,7 @@ Runtime artifacts (future; written by notebook 13) go to `MyDrive/EnvedaCASMI/re
 - audits: `mass_range_audit.csv`, `inference_mass_range.json`, `adduct_charge_audit.csv`
 - other: `figures/`, `metadata.json`
 
-Code lives on GitHub `mybenkhadda/enveda-kaggle`, branch `feature/external-coverage-gate`. The notebook's operational
-copy is at `MyDrive/EnvedaCASMI/notebooks/13_candidate_coverage.ipynb`, and a mirror of every file changed by this task
-is under `MyDrive/EnvedaCASMI/code_delivery/external_coverage_gate/` (repository-relative paths).
+Code lives on GitHub `mybenkhadda/enveda-kaggle`, branch `feature/validation-protocol-v2` (based on
+`feature/external-coverage-gate`). The operational notebooks are in `MyDrive/EnvedaCASMI/notebooks/`, and a mirror of
+every file changed by the protocol-v2 task is under `MyDrive/EnvedaCASMI/code_delivery/validation_protocol_v2/`
+(repository-relative paths).

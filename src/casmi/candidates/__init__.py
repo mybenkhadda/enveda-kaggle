@@ -39,6 +39,7 @@ v2 (Colab, PubChem-scale; see docs/CASMI_V2_IMPLEMENTATION_MAP.md):
     casmi.candidates.rescue        current_policy / rescue_policy external cleanup (Uncharger, fragment parent, provenance)
     casmi.candidates.pubchem_membership  LOCAL CID->InChIKey key-membership index (PUBCHEM_KEY_MEMBERSHIP_ESTIMATE)
     casmi.candidates.pubchem_tier1 PubChem Tier-1 architecture (metadata prefilter, projected raw pools, late canonicalization)
+    casmi.candidates.legacy_adoption  verify + adopt a pre-v3 universe (sidecar manifest), legacy Stage-A marker discovery
 
 CLOSED-WORLD CAVEAT: `MassIndex` is built from `molecule_metadata`, which covers every unique
 train connectivity_key regardless of CV fold. So a development query's true structure is
